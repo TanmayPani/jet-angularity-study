@@ -1,0 +1,293 @@
+from datetime import datetime
+import numpy as np
+
+import torch
+from torch.utils.data import ConcatDataset, DataLoader, RandomSampler, SequentialSampler
+from sklearn.model_selection import train_test_split
+import pyarrow as pa
+
+from torchmodel import archs
+from torchmodel.torchmodel import TensorDictModel
+from torchmodel.callbacks import EarlyStopping
+from torchmodel.datasets import JetDataset, batch_collate
+
+def get_model(dnn_layers, device=torch.device("cpu"), name="", do_debug=False):
+    classifier = TensorDictModel(
+        archs.DNN(dnn_layers, dropout_prob=0.2, do_batch_norm=True), device=device, name=name, do_debug=do_debug
+    )
+    optimizer = torch.optim.Adam(classifier().parameters(), lr=0.01)
+    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=10
+    )
+    classifier.compile(
+        criterion=torch.nn.BCEWithLogitsLoss(reduction="none"),
+        optimizer=optimizer,
+        compile_mode="default",
+        scheduler=lr_scheduler,
+    )
+
+    return classifier
+
+
+def get_sim_pa_table(file_name, data_folder="outputs", phase_space_bin_folders=None):
+    if phase_space_bin_folders is None:
+        ptHatBins = ["11", "15", "20", "25", "35", "45", "55", "infty"]
+        phase_space_bin_folders = [
+            f"ptHat{pth_low}to{pth_high}"
+            for pth_low, pth_high in zip(ptHatBins[:-1], ptHatBins[1:])
+        ]
+
+    buffer_list = [
+        pa.memory_map(f"{data_folder}/{phsp_bin_folder}/{file_name}.arrow", "rb")
+        for phsp_bin_folder in phase_space_bin_folders
+    ]
+
+    table = pa.concat_tables(
+        [pa.ipc.open_file(buffer).read_all() for buffer in buffer_list]
+    )
+
+    return table
+
+
+def main(device: torch.device = torch.device("cuda")):
+    jet_columns = [
+        "pt",
+        "nef",
+        "ch_ang_k1_b0.5",
+        "ch_ang_k1_b1",
+        "ch_ang_k1_b2",
+        "ch_ang_k2_b0",
+        "hc_pt",
+        "hc_ch_ang_k1_b0.5",
+        "hc_ch_ang_k1_b1",
+        "hc_ch_ang_k1_b2",
+        "hc_ch_ang_k2_b0",
+    ]
+
+
+
+    data_folder = "outputs/26May25-0054"
+
+    gen_match_table = get_sim_pa_table("gen-matches", data_folder=data_folder)
+    gen_miss_table = get_sim_pa_table("misses", data_folder=data_folder)
+    reco_match_table = get_sim_pa_table("reco-matches", data_folder=data_folder)
+    reco_fake_table = get_sim_pa_table("fakes", data_folder=data_folder)
+
+    data_buffer = pa.memory_map("outputs/jets-conPtMin0.2.arrow", "rb")
+    data_table = pa.ipc.open_file(data_buffer).read_all()
+
+    print(data_table["constit_pt"])
+    return 
+
+    n_data = len(data_table)
+    data_weights = np.ones(n_data)
+
+    #print(data_table.column_names)
+
+    n_gen_matches = len(gen_match_table)
+    n_gen_misses = len(gen_miss_table)
+    n_reco_matches = len(reco_match_table)
+    n_reco_fakes = len(reco_fake_table)
+    
+    n_gen = n_gen_matches + n_gen_misses
+    n_reco = n_reco_matches + n_reco_fakes
+
+    print("Number of matched gen jets:", n_gen_matches)
+    print("Number of missed gen jets:", n_gen_misses)
+    print("Number of matched reco jets:", n_reco_matches)
+    print("Number of faked reco jets:", n_reco_fakes)
+
+    val_size = 0.2 
+    batch_size = 50000
+    num_dl_workers = 10
+
+    do_debug = False
+
+    gen_match_weights = gen_match_table["weight"].to_numpy()
+    reco_match_weights = reco_match_table["weight"].to_numpy()
+    gen_miss_weights = gen_miss_table["weight"].to_numpy()
+    reco_fake_weights = reco_fake_table["weight"].to_numpy()
+    
+    gen_weights_sum = np.sum(gen_match_weights) + np.sum(gen_miss_weights)
+    reco_weights_sum = np.sum(reco_match_weights) + np.sum(reco_fake_weights)
+
+    gen_wts_norm_factor = np.sum(data_weights)/gen_weights_sum
+    reco_wts_norm_factor = np.sum(data_weights)/reco_weights_sum 
+
+    gen_match_weights = gen_wts_norm_factor*gen_match_weights 
+    reco_match_weights = reco_wts_norm_factor*reco_match_weights
+    gen_miss_weights = gen_wts_norm_factor*gen_miss_weights
+    reco_fake_weights = reco_wts_norm_factor*reco_fake_weights
+    
+    gen_weights = np.concatenate([gen_match_weights, gen_miss_weights])
+    reco_weights = np.concatenate([reco_match_weights, reco_fake_weights])
+
+    #################################################################################################################################################################################
+    #################################################################################################################################################################################
+
+    detlvl_table = pa.concat_tables([data_table, reco_match_table, reco_fake_table])
+    detlvl_labels = np.concatenate([np.ones(n_data), np.zeros(n_reco_matches + n_reco_fakes)])
+    
+    train_detlvl_indices, val_detlvl_indices = train_test_split(np.arange(len(detlvl_table)), test_size=val_size, stratify=detlvl_labels, shuffle=True)
+
+    train_detlvl_ds = JetDataset(detlvl_table.take(train_detlvl_indices), detlvl_labels[train_detlvl_indices], column_names=jet_columns)
+    train_detlvl_sampler = RandomSampler(train_detlvl_ds)
+    train_detlvl_loader = DataLoader(train_detlvl_ds, batch_size=batch_size, sampler=train_detlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    val_detlvl_ds = JetDataset(detlvl_table.take(val_detlvl_indices), detlvl_labels[val_detlvl_indices], column_names=jet_columns)
+    val_detlvl_sampler = SequentialSampler(val_detlvl_ds)
+    val_detlvl_loader = DataLoader(val_detlvl_ds, batch_size=batch_size, sampler=val_detlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    reco_match_ds = JetDataset(reco_match_table, np.zeros(n_reco_matches), column_names=jet_columns)
+    reco_match_sampler = SequentialSampler(reco_match_ds)
+    reco_match_loader = DataLoader(reco_match_ds, batch_size=batch_size, sampler=reco_match_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    det_lvl_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="detector_level", do_debug=do_debug)
+
+    #################################################################################################################################################################################
+
+    fake_scaler_table = pa.concat_tables([reco_match_table, reco_match_table])
+    fake_scaler_labels = np.concatenate([np.ones(n_reco_matches), np.zeros(n_reco_matches)])
+    
+    train_fake_scaler_indices, val_fake_scaler_indices = train_test_split(np.arange(len(fake_scaler_table)), test_size=val_size, stratify=fake_scaler_labels, shuffle=True)
+
+    train_fake_scaler_ds = JetDataset(fake_scaler_table.take(train_fake_scaler_indices), fake_scaler_labels[train_fake_scaler_indices], column_names=jet_columns)
+    train_fake_scaler_sampler = RandomSampler(train_fake_scaler_ds)
+    train_fake_scaler_loader = DataLoader(train_fake_scaler_ds, batch_size=batch_size, sampler=train_fake_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+    
+    val_fake_scaler_ds = JetDataset(fake_scaler_table.take(val_fake_scaler_indices), fake_scaler_labels[val_fake_scaler_indices], column_names=jet_columns)
+    val_fake_scaler_sampler = RandomSampler(val_fake_scaler_ds)
+    val_fake_scaler_loader = DataLoader(val_fake_scaler_ds, batch_size=batch_size, sampler=val_fake_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    reco_fake_ds = JetDataset(reco_fake_table, np.zeros(n_reco_fakes), column_names=jet_columns)
+    reco_fake_sampler = SequentialSampler(reco_fake_ds)
+    reco_fake_loader = DataLoader(reco_fake_ds, batch_size=batch_size, sampler=reco_fake_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    fake_scaler_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="fake_scaler", do_debug=do_debug)
+
+    #################################################################################################################################################################################
+    #################################################################################################################################################################################
+    
+    genlvl_table = pa.concat_tables([gen_match_table, gen_miss_table, gen_match_table, gen_miss_table])
+    genlvl_labels = np.concatenate([np.ones(n_gen_matches + n_gen_misses), np.zeros(n_gen_matches + n_gen_misses)])
+    
+    train_genlvl_indices, val_genlvl_indices = train_test_split(np.arange(len(genlvl_table)), test_size=val_size, stratify=genlvl_labels, shuffle=True)
+
+    train_genlvl_ds = JetDataset(genlvl_table.take(train_genlvl_indices), genlvl_labels[train_genlvl_indices], column_names=jet_columns)
+    train_genlvl_sampler = RandomSampler(train_genlvl_ds)
+    train_genlvl_loader = DataLoader(train_genlvl_ds, batch_size=batch_size, sampler=train_genlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    val_genlvl_ds = JetDataset(genlvl_table.take(val_genlvl_indices), genlvl_labels[val_genlvl_indices], column_names=jet_columns)
+    val_genlvl_sampler = SequentialSampler(val_genlvl_ds)
+    val_genlvl_loader = DataLoader(val_genlvl_ds, batch_size=batch_size, sampler=val_genlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    gen_match = JetDataset(gen_match_table, np.zeros(n_gen_matches), column_names=jet_columns)
+    gen_match_sampler = SequentialSampler(gen_match)
+    gen_match_loader = DataLoader(gen_match, batch_size=batch_size, sampler=gen_match_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    gen_lvl_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="particle_level", do_debug=do_debug)
+
+    #################################################################################################################################################################################
+    miss_scaler_table = pa.concat_tables([gen_match_table, gen_match_table])
+    miss_scaler_labels = np.concatenate([np.ones(n_gen_matches), np.zeros(n_gen_matches)])
+    
+    train_miss_scaler_indices, val_miss_scaler_indices = train_test_split(np.arange(len(miss_scaler_table)), test_size=val_size, stratify=miss_scaler_labels, shuffle=True)
+
+    train_miss_scaler_ds = JetDataset(miss_scaler_table.take(train_miss_scaler_indices), miss_scaler_labels[train_miss_scaler_indices], column_names=jet_columns)
+    train_miss_scaler_sampler = RandomSampler(train_miss_scaler_ds)
+    train_miss_scaler_loader = DataLoader(train_miss_scaler_ds, batch_size=batch_size, sampler=train_miss_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+    
+    val_miss_scaler_ds = JetDataset(miss_scaler_table.take(val_miss_scaler_indices), miss_scaler_labels[val_miss_scaler_indices], column_names=jet_columns)
+    val_miss_scaler_sampler = RandomSampler(val_miss_scaler_ds)
+    val_miss_scaler_loader = DataLoader(val_miss_scaler_ds, batch_size=batch_size, sampler=val_miss_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+
+    gen_miss_ds = JetDataset(gen_miss_table, np.zeros(n_gen_misses), column_names=jet_columns)
+    gen_miss_sampler = SequentialSampler(gen_miss_ds)
+    gen_miss_loader = DataLoader(gen_miss_ds, batch_size=batch_size, sampler=gen_miss_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
+    
+    miss_scaler_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="miss_scaler", do_debug=do_debug)
+
+    
+    #################################################################################################################################################################################
+    #################################################################################################################################################################################
+    
+    in_keys = [("features")]
+    out_key = "targets"
+
+    n_iterations = 3
+    w_unfolding = [gen_weights, reco_weights]
+
+    num_epochs = 50
+    patience = 5 
+    checkpoint_folder=f"output/checkpoints/{datetime.now().strftime('%Y%m%d_%H%M')}"
+
+    epsilon = 1e-20
+
+    for iteration in range(n_iterations):
+        print("###############################################################################################")
+        print(f"Iteration: {iteration}/{n_iterations}")
+        print("###############################################################################################")
+
+        print("---Setting reco weights...")
+        detlvl_weights = np.concatenate([data_weights, w_unfolding[-1]])
+        train_detlvl_ds.set_sample_weights(detlvl_weights[train_detlvl_indices])
+        val_detlvl_ds.set_sample_weights(detlvl_weights[val_detlvl_indices])
+
+        print("---Calculating pull weights for gen matches...")
+        det_lvl_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/det_lvl", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
+        det_lvl_history = det_lvl_model.fit(train_detlvl_loader, val_detlvl_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=det_lvl_earlystop)
+        predictions = det_lvl_model.predict(reco_match_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
+        gen_match_reweight = predictions / (1. - predictions + epsilon)
+        
+        #################################################################################################################################################################################
+        
+        print("---Calculating pull weights for gen misses...")
+        gen_miss_scaler_weights = np.concatenate([gen_match_reweight, np.ones(n_gen_matches)])
+        train_miss_scaler_ds.set_sample_weights(gen_miss_scaler_weights[train_miss_scaler_indices])
+        val_miss_scaler_ds.set_sample_weights(gen_miss_scaler_weights[val_miss_scaler_indices])
+
+        miss_scaler_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/miss_scaler", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
+        miss_scaler_history = miss_scaler_model.fit(train_miss_scaler_loader, val_miss_scaler_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=miss_scaler_earlystop)
+        predictions = miss_scaler_model.predict(gen_miss_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
+        gen_miss_reweight = predictions / (1. - predictions + epsilon)
+
+        gen_match_weights = gen_match_weights*gen_match_reweight
+        gen_miss_weights = gen_miss_weights*gen_miss_reweight
+
+        #################################################################################################################################################################################
+        w_unfolding.append(np.concatenate([gen_match_weights, gen_miss_weights]))
+        #################################################################################################################################################################################
+        
+        print("---Setting gen weights...")
+        genlvl_weights = np.concatenate([w_unfolding[-1], w_unfolding[-3]])
+        train_genlvl_ds.set_sample_weights(genlvl_weights[train_genlvl_indices])
+        val_genlvl_ds.set_sample_weights(genlvl_weights[val_genlvl_indices])
+        
+        print("---Calculating push weights for reco matches...")
+        gen_lvl_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/gen_lvl", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
+        gen_lvl_history = gen_lvl_model.fit(train_genlvl_loader, val_genlvl_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=gen_lvl_earlystop)
+        predictions = gen_lvl_model.predict(gen_match_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
+        reco_match_reweight = predictions / (1. - predictions + epsilon)
+
+        #################################################################################################################################################################################
+        
+        print("---Calculating push weights for reco fakes...")
+        reco_fake_scaler_weights = np.concatenate([reco_match_reweight, np.ones(n_reco_matches)])
+        train_fake_scaler_ds.set_sample_weights(reco_fake_scaler_weights[train_fake_scaler_indices])
+        val_fake_scaler_ds.set_sample_weights(reco_fake_scaler_weights[val_fake_scaler_indices])
+
+        fake_scaler_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/fake_scaler", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
+        fake_scaler_history = fake_scaler_model.fit(train_fake_scaler_loader, val_fake_scaler_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=fake_scaler_earlystop)
+        predictions = fake_scaler_model.predict(reco_fake_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
+        reco_fake_reweight = predictions / (1. - predictions + epsilon)
+
+        reco_match_weights = reco_match_weights*reco_match_reweight
+        reco_fake_weights = reco_fake_weights*reco_fake_reweight
+
+        #################################################################################################################################################################################
+        w_unfolding.append(np.concatenate([reco_match_weights, reco_fake_weights]))
+        #################################################################################################################################################################################
+    print("Done!")
+
+if __name__ == "__main__":
+    main()

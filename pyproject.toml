@@ -1,0 +1,47 @@
+[project]
+name = "jet-angularity-study"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "cupy-cuda12x>=13.4.1",
+  "fastjet>=3.4.3.1",
+  "hepstats>=0.9.2",
+  "matplotlib>=3.10.1",
+  "numpy>=2.2.4",
+  "particle>=0.25.2",
+  "pyarrow>=19.0.1",
+  "scikit-learn>=1.6.1",
+  "uproot>=5.6.0",
+  "vector>=1.6.1",
+  "numba>=0.61",
+  "scipy>=1.15.2",
+  "tensordict>=0.7.2",
+  "torchmodel",
+  "torchmetrics>=1.7.2",
+]
+
+[dependency-groups]
+dev = [
+  "hist[fit,plot]>=2.8.1",
+  "ipykernel>=6.29.5",
+  "mplhep>=0.3.59",
+  "pyqt5>=5.15.11",
+  "pyqt6>=6.9.0",
+  "pyright>=1.1.398",
+  "uproot-browser>=0.7.2",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+torchmodel = { workspace = true }
+
+[tool.uv.workspace]
+members = ["torchmodel"]
