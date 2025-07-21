@@ -1,16 +1,10 @@
 import os
-from collections.abc import Sequence, Sized, Iterable
-from datetime import datetime
-from typing import Optional, Union, List, Any, Generic
 import pickle
 
 import numpy as np
-from numpy import typing as npt
 from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.model_selection import train_test_split
 
 import pyarrow as pa
-from pyarrow import compute as pc 
 
 from scipy.stats import chisquare
 
@@ -20,61 +14,7 @@ import histograms
 
 import copy
 
-def add_constit_slice_column(jet_table, consit_col_name, new_col_name, start, stop=None):
-    if stop is None:
-        stop = start+1
-    carr = pc.list_slice(jet_table[consit_col_name], start, stop=stop).combine_chunks().flatten()
-    return jet_table.append_column(new_col_name, carr)
-
-def add_leading_constit_column(jet_table): 
-    constit_pt_arr = jet_table["constit_pt"].combine_chunks().values
-    constit_jet_indices = jet_table["constit_pt"].combine_chunks().value_parent_indices()
-    constit_table = pa.table({"constit_pt":constit_pt_arr, "jet_index":constit_jet_indices})
-    agg = constit_table.group_by("jet_index").aggregate([("constit_pt", "max")])
-
-    return jet_table.append_column("leading_constit_pt", agg["constit_pt_max"])
-
-def pa_table(source : str , label : Optional[npt.ArrayLike] = None):
-    buffer = pa.memory_map(source, "rb")
-    table = pa.ipc.open_file(buffer).read_all()
-    _len = len(table)
-    label_arr = None
-    if isinstance(label, (int, np.number)):
-        label_arr = np.full(_len, label, dtype=np.int_)
-    elif isinstance(label, np.ndarray):
-        assert len(label) == _len
-        label_arr = np.asarray(label, dtype=np.int_)
-    else: 
-        label_arr = np.empty(0)
-
-    return buffer, add_extra_columns(table), label_arr
-
-def pa_concated_table(source : Sequence[str], label : Optional[Sequence[npt.ArrayLike]] = None):
-    n_tables = len(source)
-    label_iter = label if label is not None else [None]*n_tables 
-    buffer_list = []
-    table_list = []
-    label_list = []
-    for _source, _label in zip(source, label_iter):
-        if not isinstance(_source, str):
-            raise TypeError("Can't use sources other than path strings for pa.Table!")
-        buffer, table, label_arr = pa_table(_source, label=_label)
-        buffer_list.append(buffer)
-        table_list.append(table)
-        label_list.append(label_arr)
-
-    return buffer_list, pa.concat_tables(table_list), np.concatenate(label_list)
-
-def add_extra_columns(table : pa.Table) -> pa.Table:
-    table = add_constit_slice_column(table, "constit_pt", "leading_constit_pt", 0)
-    table = add_constit_slice_column(table, "constit_eta", "leading_constit_eta", 0)
-    table = add_constit_slice_column(table, "constit_phi", "leading_constit_phi", 0)
-
-    table = add_constit_slice_column(table, "constit_pt", "subleading_constit_pt", 1)
-    table = add_constit_slice_column(table, "constit_eta", "subleading_constit_eta", 1)
-    table = add_constit_slice_column(table, "constit_phi", "subleading_constit_phi", 1)
-
-    return table
+from _unfolding_utils import pa_concated_table, pa_table
 
 def propagate_values(x1, y1, x2, estimator=None, num_prediction_batches=None):
     if estimator is None:
@@ -135,24 +75,21 @@ def main():
     n_pth_bins = len(pth_bin_folders)
     pth_label = list(range(1, n_pth_bins+1))
 
-    gen_match_buffers, gen_match_table, gen_match_stratify_label = pa_concated_table([f"{folder}/gen-matches.arrow" for folder in pth_bin_folders], label=pth_label)
-    gen_miss_buffers, gen_miss_table, gen_miss_stratify_label = pa_concated_table([f"{folder}/misses.arrow" for folder in pth_bin_folders], label=pth_label) 
-    reco_match_buffers, reco_match_table, reco_match_stratify_label = pa_concated_table([f"{folder}/reco-matches.arrow" for folder in pth_bin_folders], label=pth_label)
-    reco_fake_buffers, reco_fake_table, reco_fake_stratify_label = pa_concated_table([f"{folder}/fakes.arrow" for folder in pth_bin_folders], label=pth_label)
+    gen_match_buffers, gen_match_table = pa_concated_table([f"{folder}/gen-matches.arrow" for folder in pth_bin_folders], label=pth_label, label_key="stratify_labels")
+    gen_miss_buffers, gen_miss_table = pa_concated_table([f"{folder}/misses.arrow" for folder in pth_bin_folders], label=pth_label, label_key="stratify_labels") 
+    reco_match_buffers, reco_match_table = pa_concated_table([f"{folder}/reco-matches.arrow" for folder in pth_bin_folders], label=pth_label, label_key="stratify_labels")
+    reco_fake_buffers, reco_fake_table = pa_concated_table([f"{folder}/fakes.arrow" for folder in pth_bin_folders], label=pth_label, label_key="stratify_labels")
 
-    data_buffer, data_table, data_stratify_label = pa_table("outputs/jets-conPtMin0.2.arrow", label=0)
+    data_buffer, data_table = pa_table("outputs/jets-conPtMin0.2.arrow", label=0, label_key="stratify_labels")
     
     do_use_gen_misses = False
 
     if do_use_gen_misses:
         gen_table = pa.concat_tables([gen_match_table, gen_miss_table])
-        gen_stratify_label = np.concatenate([gen_match_stratify_label, gen_miss_stratify_label])
     else:
         gen_table = gen_match_table
-        gen_stratify_label = gen_match_stratify_label
 
     reco_table =pa.concat_tables([reco_match_table, reco_fake_table])
-    reco_stratify_label = np.concatenate([reco_match_stratify_label, reco_fake_stratify_label])
  
     n_data = len(data_table)
 
@@ -196,23 +133,23 @@ def main():
         max_chi2_var = ""
         print(f"Iteration: {iteration}")
         for icol, col in enumerate(jet_columns):
-            data_array = data_table[col]
-            gen_array = gen_table[col]
-            reco_array = reco_table[col]
+            data_array = data_table[col].to_numpy()
+            gen_array = gen_table[col].to_numpy()
+            reco_array = reco_table[col].to_numpy()
 
             if iteration == 0:
                 print(f"---Calculating bin edges using Baysian blocks for {col} histograms...")
                 h = {}
-                h["bins"], h["data"], h["data_err"] = histograms.make_hist(data_array.to_numpy(), name=col, p0=0.06, range=col_ranges[col])
+                h["bins"], h["data"], h["data_err"] = histograms.make_hist(data_array, name=col, p0=0.06, range=col_ranges[col])
                 if do_diff_gen_bins:
-                    h["gen_bins"], h["gen"], h["gen_err"] = histograms.make_hist(gen_array.to_numpy(), weight=gen_weights, name=col, size_for_bins=0.1, p0=0.05, shuffle=True, stratify=gen_match_stratify_label)
+                    h["gen_bins"], h["gen"], h["gen_err"] = histograms.make_hist(gen_array, weight=gen_weights, name=col, size_for_bins=0.1, p0=0.05, shuffle=True, stratify=gen_match_stratify_label)
                 else:
                     h["gen_bins"] = h["bins"]
             else:
                 h = hists[col]
 
-            _, h["reco"], h["reco_err"] = histograms.make_hist(reco_array.to_numpy(), weight=reco_weights, name=col, bins=h["bins"])
-            _, h["gen"], h["gen_err"] = histograms.make_hist(gen_array.to_numpy(), weight=gen_weights, name=col,bins=h["gen_bins"])
+            _, h["reco"], h["reco_err"] = histograms.make_hist(reco_array, weight=reco_weights, name=col, bins=h["bins"])
+            _, h["gen"], h["gen_err"] = histograms.make_hist(gen_array, weight=gen_weights, name=col,bins=h["gen_bins"])
 
             h["ratio"] = h["data"] / h["reco"]
             h["ratio_err"] = h["ratio"] * np.sqrt((h["data_err"] / h["data"]) ** 2 + (h["reco_err"] / h["reco"]) ** 2)
@@ -232,11 +169,10 @@ def main():
                 max_chi2_var = col
 
         iter_hist_list.append(copy.deepcopy(hists))
+        
         if max_chi2 < 1:
             break
         
-        last_iteration = iteration
-
         print(f"---Max chi2 = {max_chi2} from {max_chi2_var}")
         bins = hists[max_chi2_var]["bins"]
         nbins = len(bins) - 1
@@ -265,13 +201,15 @@ def main():
         gen_weights = gen_weights * (float(n_data)/np.sum(gen_weights))
 
         w_unfolding.extend([gen_weights, reco_weights])
+
     print("Iterations done...")
-    with open(f"{output_folder}/omniseq-wts-iter{iteration+1}.npz", "wb") as f:
+    last_iteration = len(iter_hist_list)
+    with open(f"{output_folder}/omniseq-wts-iter{last_iteration}.npz", "wb") as f:
         np.savez(f, *w_unfolding)
 
     col_bins = {col:h["bins"] for col, h in hists.items()}
 
-    with open(f"{output_folder}/omniseq-bins{iteration+1}.pkl", "wb") as f:
+    with open(f"{output_folder}/omniseq-bins{last_iteration}.pkl", "wb") as f:
         pickle.dump(col_bins, f)
 
     fig_scale = 6

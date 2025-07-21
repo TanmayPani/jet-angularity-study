@@ -5,10 +5,13 @@ build/
 dist/
 wheels/
 *.egg-info
+.cache/
+1
+@
 
 #script outputs
 embedding_*
-extra-
+extra-*
 configs/
 plot_output/
 outputs/

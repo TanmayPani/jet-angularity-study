@@ -10,7 +10,7 @@ import awkward as ak
 
 import numba as nb
 
-import utils
+import _clustering_utils as utils
 
 import os
 import sys

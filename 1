@@ -1,90 +1,237 @@
+from __future__ import annotations
+
+from typing import Any, Callable, Union, Optional, TypeVar, Dict
+from collections.abc import Sequence, Iterator, Sized
+
+import pyarrow as pa
+
 import numpy as np
-from sklearn.model_selection import train_test_split
-from hepstats.modeling import bayesian_blocks
+import numpy.typing as npt
+
+import torch
+from torch.utils.data import Dataset, Sampler
+from tensordict import pad_sequence
+from tensordict.tensordict import TensorDict
+from uproot import update
+
+type TensorLike = Union[torch.Tensor, tuple[torch.Tensor, ...], list[torch.Tensor]] 
+
+type TensorLikeSeq = Union[TensorLike, Sequence[TensorLike]]
+
+def collate_fn(tensor_like : Optional[TensorLikeSeq], batch_size=-1):
+    if tensor_like is None:
+        return None
+
+    if torch.is_tensor(tensor_like):
+        if batch_size > 0:
+            assert tensor_like.shape[0] == batch_size
+        return tensor_like
+
+    if isinstance(tensor_like, (tuple, list)):
+        if isinstance(tensor_like[0], (tuple, list)):
+            return [collate_fn(tensor) for tensor in tensor_like] 
+
+        if isinstance(tensor_like[0], torch.Tensor):
+            if batch_size > 0:
+                sum_batch_dim_sizes = sum([tensor.shape[0] for tensor in tensor_like])
+                assert sum_batch_dim_sizes == batch_size
+            return torch.cat(tensor_like, dim=0)
+    
+    raise ValueError("Can't collate given type of tensor collection")
+
+def pin_memory_fn(tensor : Optional[torch.Tensor]):
+    if tensor is None:
+        return None
+
+    if tensor.is_pinned():
+        return tensor
+
+    return tensor.pin_memory()
+
+def get_tensor_kwargs(tensor):
+    return {"dtype" : tensor.dtype, 
+            "device" : tensor.device, 
+            "requires_grad" : tensor.requires_grad, 
+            "pin_memory" : tensor.is_pinned()}
 
 
-def make_hist(
-    array,
-    weight=None,
-    name="",
-    bins=None,
-    range=(None, None),
-    #npoint_for_bins=30000,
-    size_for_bins=0.01,
-    p0=0.05,
-    shuffle=False,
-    stratify=None
-):
-    if weight is None:
-        weight = np.ones_like(array)
-    else:
-        weight = weight / np.mean(weight)
+def copy_or_create(src : Optional[torch.Tensor], dest : Optional[torch.Tensor], to_dest = True):
+    if dest is None:
+        #print("dest is none")
+        dest = src
+        #print(dest)
+        return dest
+    
+    if src is not None and dest.shape == src.shape:
+        print("copying")
+        return dest.copy_(src)
 
-    mask = np.full_like(array, True, dtype=np.bool)
-    if range[0] is not None:
-        mask = mask & (array > range[0])
-    if range[1] is not None:
-        mask = mask & (array < range[1])
+    kwargs = get_tensor_kwargs(dest) if to_dest else get_tensor_kwargs(src) 
+    dest = None
+    dest = torch.tensor(src, **kwargs)
+    return dest
 
-    #print(type(mask), mask.dtype, mask[0:20])
+class Batch:
+    indices : Optional[torch.Tensor]
+    inputs : Optional[torch.Tensor]
+    targets : Optional[torch.Tensor]
+    sample_weights : Optional[torch.Tensor]
+    batch_size : int = 0
+    
+    def __init__(self, batch_size=-1, **kwargs):
+        self.batch_size = batch_size
+        self.indices = kwargs.pop("indices", None)
+        self.inputs = kwargs.pop("inputs", None)
+        self.targets = kwargs.pop("targets", None)
+        self.sample_weights = kwargs.pop("sample_weights", None)
 
-    array = array[mask]
-    if stratify is not None:
-        stratify = stratify[mask]
+    def batch_collate(self, indices, inputs, targets, sample_weights=None):
+        try:
+            self.update_attr("indices", collate_fn(indices, batch_size=self.batch_size))
+            self.update_attr("inputs", collate_fn(inputs, batch_size=self.batch_size))
+            self.update_attr("targets", collate_fn(targets, batch_size=self.batch_size))
+            self.update_attr("sample_weights", collate_fn(sample_weights, batch_size=self.batch_size))
+        except AssertionError:
+            raise ValueError("Mismatch in batch size and received tensor size! Either pass batch_size=-1 or check Dataset subclass")
 
-    jetIndices = np.arange(len(array))
-    _, bin_est_ids = train_test_split(jetIndices, test_size=size_for_bins, shuffle=shuffle, stratify=stratify)
+    def update_attr(self, name, value):
+        print(self.__dict__)
+        if name not in self.__dict__:
+            raise KeyError("Can't update value of attribute that doesn't exist!!")
+        self.__setattr__(name, copy_or_create(value, self.__dict__[name]))
 
-    if bins is None:
-        bins = bayesian_blocks(
-            array[bin_est_ids],
-            weights=weight[bin_est_ids],
-            p0=p0,
-        )  # [1:]
-        # print("Bins using bayesian blocks:", bins)
-    binWidths = bins[1:] - bins[:-1]
+    def __call__(self, indices, inputs, targets, sample_weights=None):
+        self.batch_collate(indices, inputs, targets, sample_weights=sample_weights)
+        return self
 
-    hCounts, _ = np.histogram(array, bins=bins, weights=weight)
-    hSumw2, _ = np.histogram(array, bins=bins, weights=weight * weight)
+    def __len__(self):
+        return len(self.indices or [])
 
-    hErr = np.sqrt(hSumw2)
+    def unpack_data(self):
+        return self.indices, self.inputs, self.targets, self.sample_weights 
 
-    sumBinCounts = np.sum(hCounts)
-    binScale = 1.0 / (sumBinCounts * binWidths)
-    binCountScaled = hCounts * binScale
-    binError = hErr * binScale
+    def pin_memory(self):
+        self.indices = pin_memory_fn(self.indices)
+        self.inputs = pin_memory_fn(self.inputs)
+        self.targets = pin_memory_fn(self.targets)
+        self.sample_weights = pin_memory_fn(self.sample_weights)
+        return self
 
-    return bins, binCountScaled, binError
+class SubsetSequentialSampler(Sampler[int]):
+    r"""Samples elements sequential from a given list of indices, without replacement.
+
+    Args:
+        indices (sequence): a sequence of indices
+    """
+    indices: Sequence[int]
+
+    def __init__(self, indices: Sequence[int]) -> None:
+        self.indices = indices
+
+    def __iter__(self) -> Iterator[int]:
+        for index in self.indices:
+            yield index
+
+    def __len__(self) -> int:
+        return len(self.indices)
+
+class TorchDataset(Dataset):
+    inputs : Any
+    targets : Sequence
+    sample_weights : Optional[Sequence] = None
+    length : int = 0
+    def __init__(self, length : int):
+        super().__init__()
+        self.length = length
+
+    def check_length(self, arr : Optional[Sized]):
+        if arr is None:
+            return
+        if len(arr) == self.length:
+            return
+        raise ValueError("TorchDataset sized input doesn't match dataset length!")
+
+    def __setattr__(self, name: str, value: Any, /) -> None:
+        if name in ["inputs", "targets", "sample_weights"]:
+            self.check_length(value)
+        
+        self.__dict__[name] = value
+
+    def getitems_inputs(self, idxs : list[int]) -> torch.Tensor:
+        raise NotImplementedError("override getitems_inputs method in your inherited class to use __getitem__ or __getitems__")
+
+    def getitems_targets(self, idxs : list[int]) -> torch.Tensor:
+        raise NotImplementedError("override getitems_targets method in your inherited class to use __getitem__ or __getitems__")
+
+    def getitems_sample_weights(self, idxs : list[int]) -> Optional[torch.Tensor]:
+        raise NotImplementedError("override getitems_sample_weights method in your inherited class to use __getitem__ or __getitems__")
+
+    def __len__(self):
+        return self.length
+
+    def __getitems__(self, idxs):
+        return torch.as_tensor(idxs, dtype=torch.long), self.getitems_inputs(idxs), self.getitems_targets(idxs), self.getitems_sample_weights(idxs)
+    
+    def __getitem__(self, idx):
+        if isinstance(idx, list):
+            return self.__getitems__(idx)
+        return self.__getitems__([idx])
 
 
-def make_profile(
-    x, y, weight=None, name="", bins=None, npoint_for_bins=30000, p0=0.05, shuffle=False
-):
-    if weight is None:
-        weight = np.ones_like(x)
-    else:
-        weight = weight / np.mean(weight)
+class CategoricalDataset(TorchDataset):
+    def __init__(self, targets : Sequence[int], sample_weights : Optional[Sequence[float]] = None, **kwargs):
+        length = kwargs.pop("length", len(targets))
 
-    jetIndices = np.arange(len(x))
-    if shuffle:
-        np.random.default_rng().shuffle(jetIndices)
+        self.unique_labels = np.unique(targets)
+        self.num_classes = kwargs.pop("num_classes", len(self.unique_labels))
 
-    if bins is None:
-        bins = bayesian_blocks(
-            x[jetIndices[0:npoint_for_bins]],
-            weights=weight[jetIndices[0:npoint_for_bins]],
-            p0=p0,
-        )  # [1:]
+        targets_tensor = torch.as_tensor(targets, dtype=torch.float32).unsqueeze_(1)
 
-    hSumy, _ = np.histogram(x, bins=bins, weights=y * weight)
-    hSumw, _ = np.histogram(x, bins=bins, weights=weight)
+        sample_weights = sample_weights or [1.]*self.length
+        sample_weights_tensor = self.sample_weights_tensor(sample_weights)
+        
+        super().__init__(length)
+        self.__setattr__("targets", targets_tensor)
+        self.__setattr__("sample_weights", sample_weights_tensor)
 
-    hMeany = hSumy / (hSumw + 1e-8)
+    def sample_weights_tensor(self, sample_weights:Sequence[float] | npt.NDArray[np.float64]):
+        assert len(sample_weights) == self.length
+        return torch.as_tensor(
+            sample_weights, dtype=torch.float32
+        ).unsqueeze_(1)
 
-    hSumy2, _ = np.histogram(x, bins=bins, weights=weight * y * y)
-    hMeany2 = hSumy2 / (hSumw + 1e-8)
-    hVary = hMeany2 - hMeany * hMeany
+    def getitems_targets(self, idxs):
+        return self.targets[idxs]
+    
+    def getitems_sample_weights(self, idxs):
+        return self.sample_weights[idxs]
 
-    hErry = np.sqrt(hVary)
 
-    return bins, hMeany, hErry
+class ArrowCategoricalDataset(CategoricalDataset):
+    def __init__(
+        self,
+        inputs: pa.Table,
+        targets,
+        sample_weights = None,
+        is_jagged: bool = False,
+        **kwargs,
+    ):
+        self.column_names = kwargs.pop("column_names", None)
+        self.is_jagged = is_jagged
+
+        super().__init__(targets, sample_weights=sample_weights, length = len(inputs), **kwargs)
+        if self.column_names:
+            self.__setattr__("inputs", inputs.select(self.column_names))
+        else:
+            self.__setattr__("inputs", inputs.select(self))
+            self.column_names = inputs.column_names
+
+    def getitems_inputs(self, idxs):
+        _feature_list = list(zip(*self.inputs.take(idxs).to_pydict().values()))
+        #if self.is_ragged:
+        #    _features_td = pad_sequence([TensorDict({self.dict_key : torch.as_tensor(_features, dtype=torch.float32)}) for _features in _feature_list], pad_dim=-1)
+        #    _dict.update_(_features_td)
+        #else:
+        return torch.as_tensor(_feature_list, dtype=torch.float32)
+
+

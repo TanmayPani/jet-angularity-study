@@ -600,6 +600,7 @@ dependencies = [
     { name = "numpy" },
     { name = "particle" },
     { name = "pyarrow" },
+    { name = "pythia8mc" },
     { name = "scikit-learn" },
     { name = "scipy" },
     { name = "tensordict" },
@@ -617,6 +618,7 @@ dev = [
     { name = "pyqt5" },
     { name = "pyqt6" },
     { name = "pyright" },
+    { name = "tabulate" },
     { name = "uproot-browser" },
 ]
 
@@ -630,6 +632,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.2.4" },
     { name = "particle", specifier = ">=0.25.2" },
     { name = "pyarrow", specifier = ">=19.0.1" },
+    { name = "pythia8mc", specifier = ">=8.315.0" },
     { name = "scikit-learn", specifier = ">=1.6.1" },
     { name = "scipy", specifier = ">=1.15.2" },
     { name = "tensordict", specifier = ">=0.7.2" },
@@ -647,6 +650,7 @@ dev = [
     { name = "pyqt5", specifier = ">=5.15.11" },
     { name = "pyqt6", specifier = ">=6.9.0" },
     { name = "pyright", specifier = ">=1.1.398" },
+    { name = "tabulate", specifier = ">=0.9.0" },
     { name = "uproot-browser", specifier = ">=0.7.2" },
 ]
 
@@ -1476,6 +1480,17 @@ wheels = [
 ]
 
 [[package]]
+name = "pythia8mc"
+version = "8.315.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/31/80/0ec9aca00948bde81b2e929e0f87353f911d171f655130fe8dbec5c7c605/pythia8mc-8.315.0.tar.gz", hash = "sha256:9108932dd4db095d0f356b86a4537d0ea5d50d2a6804f23bb3460ecebfebd92b", size = 21267410 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/81/2b/c484cc88df31ceb64eb5def8f6f8bde7e23ff76c9ce970d51510399736ee/pythia8mc-8.315.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:f0f5ae0a7ae41c7585c6488c5b485ddb6216308fb289fbe835f3f7689d05039d", size = 27145840 },
+    { url = "https://files.pythonhosted.org/packages/55/46/b4fca1f5eaa0e449b5972d59ac62cefa712125b60be5e75425ea2e8612f6/pythia8mc-8.315.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5298d9b30b9481edb12c9986e01dc3bd5b5bca2bfde01728aa9b2087168819a2", size = 29923051 },
+    { url = "https://files.pythonhosted.org/packages/a9/49/d426aa1c9ed1d84f538cc818813bb4ada82d90cf34bd169806ca193d2b8b/pythia8mc-8.315.0-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:62422403d75d64e7fa56f26b9559dfcd30921bedc62c93377576a060aaf3f75b", size = 29867860 },
+]
+
+[[package]]
 name = "python-dateutil"
 version = "2.9.0.post0"
 source = { registry = "https://pypi.org/simple" }
@@ -1678,6 +1693,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ca/99/5a5b6f19ff9f083671ddf7b9632028436167cd3d33e11015754e41b249a4/sympy-1.13.1.tar.gz", hash = "sha256:9cebf7e04ff162015ce31c9c6c9144daa34a93bd082f54fd8f12deca4f47515f", size = 7533040 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b2/fe/81695a1aa331a842b582453b605175f419fe8540355886031328089d840a/sympy-1.13.1-py3-none-any.whl", hash = "sha256:db36cdc64bf61b9b24578b6f7bab1ecdd2452cf008f34faa33776680c26d66f8", size = 6189177 },
+]
+
+[[package]]
+name = "tabulate"
+version = "0.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ec/fe/802052aecb21e3797b8f7902564ab6ea0d60ff8ca23952079064155d1ae1/tabulate-0.9.0.tar.gz", hash = "sha256:0095b12bf5966de529c0feb1fa08671671b3368eec77d7ef7ab114be2c068b3c", size = 81090 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/40/44/4a5f08c96eb108af5cb50b41f76142f0afa346dfa99d5296fe7202a11854/tabulate-0.9.0-py3-none-any.whl", hash = "sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f", size = 35252 },
 ]
 
 [[package]]

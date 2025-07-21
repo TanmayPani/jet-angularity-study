@@ -1,4 +1,6 @@
 # import glob
+from enum import Enum
+
 import uproot
 import pyarrow as pa
 
@@ -8,10 +10,10 @@ import vector
 import awkward as ak
 
 import numpy as np
-# import numba.cuda
+import numba as nb
 
 # import cupy as cpu
-import utils
+import _clustering_utils as _utils
 # import sys
 
 # from concurrent.futures import ProcessPoolExecutor, wait
@@ -19,8 +21,43 @@ import utils
 
 vector.register_awkward()
 
+class SysVar(Enum):
+    NONE=0
+    TOWER_ET_CORRECTION=1
+    TRACK_EFFICIENCY=2
 
-def process_events(events, con_kt_min=None):
+def apply_hadronic_correction_sys_var(events, hadr_corr_frac=0.5):
+    tower_dE = events["towers._RawE"] - events["towers._E"]
+    events["towers._E"] = events["towers._E"] - hadr_corr_frac*tower_dE
+    mass_array = ak.full_like(events["towers._E"], 0.13957)
+    tower_p2 = events["towers._E"]**2 - mass_array**2
+    tower_p2 = ak.fill_none(ak.mask(tower_p2, tower_p2 > 0), value=0)
+    tower_p = np.sqrt(tower_p2)
+    events["towers._Pt"] = tower_p/np.cosh(events["towers._Eta"])
+    return events
+
+@nb.jit
+def apply_flat_track_pt_factors(builder, event_track_pt, flat_rel_factors):
+    i_trk = 0 
+    for track_pt in event_track_pt:
+        builder.begin_list()
+        for pt in track_pt:
+            #builder.append(pt + pt*flat_rel_factors[i_trk])
+            if flat_rel_factors[i_trk] > 0.04:
+                builder.append(True)
+            else:
+                builder.append(False)
+            i_trk += 1
+        builder.end_list()
+    return builder
+
+def get_tracking_efficiency_sys_var_mask(events):
+    n_tot_trk = ak.sum(ak.count(events["tracks._Pt"], axis=0))
+    #flat_factors = np.random.default_rng().uniform(-0.04, 0.04, n_tot_trk)
+    flat_factors = np.random.default_rng().random(n_tot_trk)
+    return apply_flat_track_pt_factors(ak.ArrayBuilder(), events["tracks._Pt"], flat_factors).snapshot()
+
+def process_events(events, con_kt_min=None, sys_var=SysVar.NONE):
     coordinates = ["pt", "eta", "phi", "e", "charge"]
     branchNames = ["Pt", "Eta", "Phi", "E", "Charge"]
 
@@ -33,6 +70,14 @@ def process_events(events, con_kt_min=None):
         ),
         with_name="Momentum4D",
     )
+
+    if sys_var == SysVar.TRACK_EFFICIENCY:
+        track_mask = get_tracking_efficiency_sys_var_mask(events)
+        tracks = tracks[track_mask]
+
+    if sys_var == SysVar.TOWER_ET_CORRECTION:
+        events = apply_hadronic_correction_sys_var(events)
+
     towers = ak.zip(
         dict(
             zip(
@@ -55,7 +100,7 @@ def process_events(events, con_kt_min=None):
     isVzGood = np.abs(events._pVtx_Z) < 30.0
     isMaxTrackPtOk = ak.fill_none(ak.max(tracks.pt, axis=-1), value=0) < 30.0
     isMaxTowEtOk = ak.fill_none(ak.max(towers.et, axis=-1), value=0) < 30.0
-    isHT2Like = utils.is_event_ht2(ak.ArrayBuilder(), events).snapshot()
+    isHT2Like = _utils.is_event_ht2(ak.ArrayBuilder(), events).snapshot()
     eventFilter = isVzGood & isMaxTrackPtOk & isMaxTowEtOk & isHT2Like
 
     candidates = ak.concatenate([tracks, towers], axis=-1)
@@ -63,7 +108,10 @@ def process_events(events, con_kt_min=None):
     candidates = ak.drop_none(ak.mask(candidates, eventFilter))
     print(f"---Left with {len(candidates)} after cuts...")
 
+    #if sys_var == SysVar.NONE:
     return candidates
+
+    
 
 
 def cluster_batch(
@@ -74,15 +122,16 @@ def cluster_batch(
     batch_weight=1.0,
     do_hc_mode=False,
     hc_kt_min=2.0,
+    sys_var_type=SysVar.NONE
 ):
-    candidates = process_events(events, con_kt_min=con_kt_min)
+    candidates = process_events(events, con_kt_min=con_kt_min, sys_var=sys_var_type)
     clusterSeq = fj.ClusterSequence(candidates, jet_definition)
-    jets, constituents = utils.inclusive_jets_sorted_by_pt(clusterSeq, min_pt=cs_pt_min)
-    jets, constituents = utils.process_jets(
+    jets, constituents = _utils.inclusive_jets_sorted_by_pt(clusterSeq, min_pt=cs_pt_min)
+    jets, constituents = _utils.process_jets(
         jets, constituents, jet_pt_min=10.0, do_hc_mode=do_hc_mode, hc_kt_min=hc_kt_min
     )
     jets["weight"], _ = ak.broadcast_arrays(batch_weight, jets.pt)
-    return utils.jets_to_rb_dict(jets, constituents, do_hc_mode=do_hc_mode)
+    return _utils.jets_to_rb_dict(jets, constituents, do_hc_mode=do_hc_mode)
 
 
 def worker(
@@ -96,6 +145,7 @@ def worker(
     max_events_per_batch=-1,
     do_hc_mode=False,
     hc_kt_min=2.0,
+    sys_var_type = SysVar.NONE
 ):
     sink = pa.OSFile(output_file_name, "wb")
     writer = None
@@ -120,6 +170,7 @@ def worker(
             con_kt_min=con_kt_min,
             do_hc_mode=do_hc_mode,
             hc_kt_min=hc_kt_min,
+            sys_var_type=sys_var_type
         )
 
         if writer is None:
@@ -138,12 +189,22 @@ if __name__ == "__main__":
     con_kt_min = 0.2
     do_hc_mode = True if con_kt_min < 0.21 else False
     print(do_hc_mode)
-    badRunsList = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
+    
+    #sys_var_type = SysVar.TOWER_ET_CORRECTION
+    sys_var_type = SysVar.TRACK_EFFICIENCY
+
+    sys_var_mod = ""
+    if sys_var_type == SysVar.TOWER_ET_CORRECTION:
+        sys_var_mod = "_wTowerHadrCorrSys"
+    if sys_var_type == SysVar.TRACK_EFFICIENCY:
+        sys_var_mod = "_wTrackPtSys"
+
+    badRunsList = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime_files/runLists/pp200_production_2012_BAD_Issac.list"
     dataFolderPath = (
         "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
     )
     # runListFile = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_goodRuns.list"
-    dataFileList, good_runs = utils.read_input_files(
+    dataFileList, good_runs = _utils.read_input_files(
         dataFolderPath, badRunsList, run_number_token_id=0
     )
 
@@ -151,7 +212,7 @@ if __name__ == "__main__":
     outputFileName = (
         "outputs/jets-test.arrow"
         if do_test
-        else f"outputs/jets-conPtMin{con_kt_min}.arrow"
+        else f"outputs/jets_conPtMin{con_kt_min}{sys_var_mod}.arrow"
     )
     nbatches = 1 if do_test else -1
     nfiles_per_batch = 1 if do_test else 150
@@ -166,6 +227,7 @@ if __name__ == "__main__":
         nbatches=nbatches,
         max_events_per_batch=max_events_per_batch,
         do_hc_mode=do_hc_mode,
+        sys_var_type=sys_var_type
     )
 
     print("Done!")

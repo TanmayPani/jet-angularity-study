@@ -1,13 +1,103 @@
+from pandas.core.computation.ops import Op
 import torch
+from typing import Callable, Union, Protocol, Optional, Any
+from typing import runtime_checkable
+from collections.abc import Mapping
+
+@runtime_checkable
+class TensorCallable(Protocol):
+    def __call__(self, *args : torch.Tensor, **kwargs : Optional[Any]) -> list[torch.Tensor]:
+        ...
+
+type ModuleLike = Union[torch.nn.Module, type[torch.nn.Module], TensorCallable, type[TensorCallable]]
+
+class Lambda(torch.nn.Module):
+    def __init__(self, fn : TensorCallable):
+        super().__init__()
+        self.fn : TensorCallable = fn 
+    def forward(self, *args : torch.Tensor, **kwargs : Optional[Any])->list[torch.Tensor]:
+        return self.fn(*args, **kwargs)
+
+def initialize_layer(layer : ModuleLike, *args, **kwargs):
+    if isinstance(layer, torch.nn.Module):
+        return layer
+    
+    if isinstance(layer, TensorCallable):
+        return Lambda(layer)
+
+    return layer(*args, **kwargs)
+    
+class Layer(torch.nn.Module):
+    def __init__(self,
+                 module : ModuleLike,
+                 input_size : int,
+                 output_size : int, 
+                 dropout_prob : Optional[float] = None, 
+                 do_batch_norm : bool = False, 
+                 activation : Optional[ModuleLike] = None,
+                 activation_args: tuple[Any, ...]=(),
+                 layer_kwargs : Mapping[str, Any] = {},
+                 activation_kwargs : Mapping[str, Any] = {},
+                ):
+        super().__init__()
+        self.layeritos = torch.nn.ModuleList()
+
+        if dropout_prob is not None:
+            self.layeritos.append(torch.nn.Dropout(dropout_prob))
+        
+        self.layeritos.append(initialize_layer(module, input_size, output_size, **layer_kwargs))
+        
+        if do_batch_norm:
+            self.layeritos.append(torch.nn.BatchNorm1d(output_size))
+
+        if activation is not None:
+            self.layeritos.append(initialize_layer(activation, *activation_args, **activation_kwargs))
+     
+    def forward(self, x):
+        #print(x[0])
+        for module in self.layeritos:
+            x = module(x)
+        return x
+ 
+        
+class MLP(torch.nn.Module):
+    def __init__(self,
+                 module : ModuleLike, 
+                 activation : ModuleLike, 
+                 layer_sizes=[], 
+                 dropout_prob=None, 
+                 do_batch_norm=False, 
+                 output_activation=None, 
+                 **kwargs):
+        super().__init__()
+        self.layers = torch.nn.ModuleList()
+        self.layer_sizes = layer_sizes[:-1]
+        self.output_size = layer_sizes[-1]
+        for input_size, output_size in zip(self.layer_sizes[:-1], self.layer_sizes[1:]):
+            if dropout_prob is not None:
+                self.layers.append(torch.nn.Dropout(dropout_prob))
+            self.layers.append(torch.nn.Linear(input_size, output_size))
+            if do_batch_norm:
+                self.layers.append(torch.nn.BatchNorm1d(output_size))
+            self.layers.append(torch.nn.ReLU())
+            
+        self.layers.append(torch.nn.Linear(self.layer_sizes[-1], self.output_size))
+        if output_activation is not None:
+            if do_batch_norm:
+                self.layers.append(torch.nn.BatchNorm1d(self.output_size))
+            self.layers.append(output_activation)
+    
 
 class DNN(torch.nn.Module):
-    def __init__(self, sizes, output_activation=None, dropout_prob=None, do_batch_norm=False, **kwargs):
+    def __init__(self, layer_sizes=[100, 1], dropout_prob=None, do_batch_norm=False, output_activation=None, input_transform : Optional[torch.nn.Module]=None, **kwargs):
         super().__init__()
         
-        assert len(sizes) > 1
         self.layers = torch.nn.ModuleList()
-        self.layer_sizes = sizes[:-1]
-        self.output_size = sizes[-1]
+        if input_transform is not None:
+            self.layers.append(input_transform)
+
+        self.layer_sizes = layer_sizes[:-1]
+        self.output_size = layer_sizes[-1]
         for input_size, output_size in zip(self.layer_sizes[:-1], self.layer_sizes[1:]):
             if dropout_prob is not None:
                 self.layers.append(torch.nn.Dropout(dropout_prob))
@@ -23,6 +113,7 @@ class DNN(torch.nn.Module):
             self.layers.append(output_activation)
     
     def forward(self, x):
+        #print(x[0])
         for layer in self.layers:
             x = layer(x)
         return x

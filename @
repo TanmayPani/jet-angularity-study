@@ -1,293 +1,1336 @@
-from datetime import datetime
+import fnmatch
+from typing import Iterable, Protocol, Optional, Sequence, TypeVar, List, Union, Tuple
+from collections.abc import Mapping, Sequence
+from collections import OrderedDict
+from functools import partial
+from typing_extensions import runtime_checkable
+from contextlib import contextmanager
+import pickle
+import tempfile
+import warnings
+
 import numpy as np
+from numpy import typing as npt
+from tqdm import tqdm
 
+from sklearn.base import BaseEstimator
 import torch
-from torch.utils.data import ConcatDataset, DataLoader, RandomSampler, SequentialSampler
-from sklearn.model_selection import train_test_split
-import pyarrow as pa
+from torch.utils.data import Dataset, DataLoader
+from tensordict import TensorDict
+from torchmetrics import MetricCollection
+from torchmetrics.metric import Metric
 
-from torchmodel import archs
-from torchmodel.torchmodel import TensorDictModel
-from torchmodel.callbacks import EarlyStopping
-from torchmodel.datasets import JetDataset, batch_collate
+from .callbacks import EarlyStopping
+from .utils import params_for, to_device
 
-def get_model(dnn_layers, device=torch.device("cpu"), name="", do_debug=False):
-    classifier = TensorDictModel(
-        archs.DNN(dnn_layers, dropout_prob=0.2, do_batch_norm=True), device=device, name=name, do_debug=do_debug
-    )
-    optimizer = torch.optim.Adam(classifier().parameters(), lr=0.01)
-    lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=10
-    )
-    classifier.compile(
-        criterion=torch.nn.BCEWithLogitsLoss(reduction="none"),
-        optimizer=optimizer,
-        compile_mode="default",
-        scheduler=lr_scheduler,
-    )
+class NeuralNet(BaseEstimator):
+    prefixes_ = ["callbacks", "dataset", "compile", "iterator_train", "iterator_valid"]
+    cuda_dependent_attributes_ = []
+    init_context_ = None
 
-    return classifier
+    _modules = []
+    _criteria = []
+    _optimizers = []
 
+    def __init__(
+        self,
+        module,
+        criterion,
+        optimizer=torch.optim.Adam,
+        lr=0.01,
+        max_epochs=10,
+        batch_size=128,
+        iterator_train=DataLoader,
+        iterator_valid=DataLoader,
+        dataset=Dataset,
+        train_split=None,
+        callbacks=None,
+        predict_nonlinearity='auto',
+        warm_start=False,
+        verbose=1,
+        device='cpu',
+        compile=False,
+        use_caching='auto',
+        torch_load_kwargs=None,
+        **kwargs
+    ):
+        self.module = module
+        self.criterion = criterion
+        self.optimizer = optimizer
+        self.lr = lr
+        self.max_epochs = max_epochs
+        self.batch_size = batch_size
+        self.iterator_train = iterator_train
+        self.iterator_valid = iterator_valid
+        self.dataset = dataset
+        self.train_split = train_split
+        self.callbacks = callbacks
+        self.predict_nonlinearity = predict_nonlinearity
+        self.warm_start = warm_start
+        self.verbose = verbose
+        self.device = device
+        self.compile = compile
+        self.use_caching = use_caching
+        self.torch_load_kwargs = torch_load_kwargs
 
-def get_sim_pa_table(file_name, data_folder="outputs", phase_space_bin_folders=None):
-    if phase_space_bin_folders is None:
-        ptHatBins = ["11", "15", "20", "25", "35", "45", "55", "infty"]
-        phase_space_bin_folders = [
-            f"ptHat{pth_low}to{pth_high}"
-            for pth_low, pth_high in zip(ptHatBins[:-1], ptHatBins[1:])
-        ]
+        #self._check_deprecated_params(**kwargs)
+        history = kwargs.pop('history', None)
+        initialized = kwargs.pop('initialized_', False)
+        virtual_params = kwargs.pop('virtual_params_', dict())
 
-    buffer_list = [
-        pa.memory_map(f"{data_folder}/{phsp_bin_folder}/{file_name}.arrow", "rb")
-        for phsp_bin_folder in phase_space_bin_folders
-    ]
+        self._params_to_validate = set(kwargs.keys())
+        vars(self).update(kwargs)
 
-    table = pa.concat_tables(
-        [pa.ipc.open_file(buffer).read_all() for buffer in buffer_list]
-    )
+        self.history_ = history
+        self.initialized_ = initialized
+        self.virtual_params_ = virtual_params
 
-    return table
+    @property
+    def history(self):
+        return self.history_
 
+    @history.setter
+    def history(self, value):
+        self.history_ = value
 
-def main(device: torch.device = torch.device("cuda")):
-    jet_columns = [
-        "pt",
-        "nef",
-        "ch_ang_k1_b0.5",
-        "ch_ang_k1_b1",
-        "ch_ang_k1_b2",
-        "ch_ang_k2_b0",
-        "hc_pt",
-        "hc_ch_ang_k1_b0.5",
-        "hc_ch_ang_k1_b1",
-        "hc_ch_ang_k1_b2",
-        "hc_ch_ang_k2_b0",
-    ]
+    def notify(self, method_name, **cb_kwargs):
+        """Call the callback method specified in ``method_name`` with
+        parameters specified in ``cb_kwargs``.
 
+        Method names can be one of:
+        * on_train_begin
+        * on_train_end
+        * on_epoch_begin
+        * on_epoch_end
+        * on_batch_begin
+        * on_batch_end
 
+        """
+        getattr(self, method_name)(self, **cb_kwargs)
+        for _, cb in self.callbacks_:
+            getattr(cb, method_name)(self, **cb_kwargs)
 
-    data_folder = "outputs/26May25-0054"
+    # pylint: disable=unused-argument
+    def on_train_begin(self, net, X=None, y=None, **kwargs):
+        pass
 
-    gen_match_table = get_sim_pa_table("gen-matches", data_folder=data_folder)
-    gen_miss_table = get_sim_pa_table("misses", data_folder=data_folder)
-    reco_match_table = get_sim_pa_table("reco-matches", data_folder=data_folder)
-    reco_fake_table = get_sim_pa_table("fakes", data_folder=data_folder)
+    # pylint: disable=unused-argument
+    def on_train_end(self, net, X=None, y=None, **kwargs):
+        pass
 
-    data_buffer = pa.memory_map("outputs/jets-conPtMin0.2.arrow", "rb")
-    data_table = pa.ipc.open_file(data_buffer).read_all()
+    # pylint: disable=unused-argument
+    def on_epoch_begin(self, net, dataset_train=None, dataset_valid=None, **kwargs):
+        self.history.new_epoch()
+        self.history.record('epoch', len(self.history))
 
-    print(data_table["constit_pt"])
-    return 
+    # pylint: disable=unused-argument
+    def on_epoch_end(self, net, dataset_train=None, dataset_valid=None, **kwargs):
+        pass
 
-    n_data = len(data_table)
-    data_weights = np.ones(n_data)
+    # pylint: disable=unused-argument
+    def on_batch_begin(self, net, batch=None, training=False, **kwargs):
+        self.history.new_batch()
 
-    #print(data_table.column_names)
+    def on_batch_end(self, net, batch=None, training=False, **kwargs):
+        pass
 
-    n_gen_matches = len(gen_match_table)
-    n_gen_misses = len(gen_miss_table)
-    n_reco_matches = len(reco_match_table)
-    n_reco_fakes = len(reco_fake_table)
-    
-    n_gen = n_gen_matches + n_gen_misses
-    n_reco = n_reco_matches + n_reco_fakes
-
-    print("Number of matched gen jets:", n_gen_matches)
-    print("Number of missed gen jets:", n_gen_misses)
-    print("Number of matched reco jets:", n_reco_matches)
-    print("Number of faked reco jets:", n_reco_fakes)
-
-    val_size = 0.2 
-    batch_size = 50000
-    num_dl_workers = 10
-
-    do_debug = False
-
-    gen_match_weights = gen_match_table["weight"].to_numpy()
-    reco_match_weights = reco_match_table["weight"].to_numpy()
-    gen_miss_weights = gen_miss_table["weight"].to_numpy()
-    reco_fake_weights = reco_fake_table["weight"].to_numpy()
-    
-    gen_weights_sum = np.sum(gen_match_weights) + np.sum(gen_miss_weights)
-    reco_weights_sum = np.sum(reco_match_weights) + np.sum(reco_fake_weights)
-
-    gen_wts_norm_factor = np.sum(data_weights)/gen_weights_sum
-    reco_wts_norm_factor = np.sum(data_weights)/reco_weights_sum 
-
-    gen_match_weights = gen_wts_norm_factor*gen_match_weights 
-    reco_match_weights = reco_wts_norm_factor*reco_match_weights
-    gen_miss_weights = gen_wts_norm_factor*gen_miss_weights
-    reco_fake_weights = reco_wts_norm_factor*reco_fake_weights
-    
-    gen_weights = np.concatenate([gen_match_weights, gen_miss_weights])
-    reco_weights = np.concatenate([reco_match_weights, reco_fake_weights])
-
-    #################################################################################################################################################################################
-    #################################################################################################################################################################################
-
-    detlvl_table = pa.concat_tables([data_table, reco_match_table, reco_fake_table])
-    detlvl_labels = np.concatenate([np.ones(n_data), np.zeros(n_reco_matches + n_reco_fakes)])
-    
-    train_detlvl_indices, val_detlvl_indices = train_test_split(np.arange(len(detlvl_table)), test_size=val_size, stratify=detlvl_labels, shuffle=True)
-
-    train_detlvl_ds = JetDataset(detlvl_table.take(train_detlvl_indices), detlvl_labels[train_detlvl_indices], column_names=jet_columns)
-    train_detlvl_sampler = RandomSampler(train_detlvl_ds)
-    train_detlvl_loader = DataLoader(train_detlvl_ds, batch_size=batch_size, sampler=train_detlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    val_detlvl_ds = JetDataset(detlvl_table.take(val_detlvl_indices), detlvl_labels[val_detlvl_indices], column_names=jet_columns)
-    val_detlvl_sampler = SequentialSampler(val_detlvl_ds)
-    val_detlvl_loader = DataLoader(val_detlvl_ds, batch_size=batch_size, sampler=val_detlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    reco_match_ds = JetDataset(reco_match_table, np.zeros(n_reco_matches), column_names=jet_columns)
-    reco_match_sampler = SequentialSampler(reco_match_ds)
-    reco_match_loader = DataLoader(reco_match_ds, batch_size=batch_size, sampler=reco_match_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    det_lvl_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="detector_level", do_debug=do_debug)
-
-    #################################################################################################################################################################################
-
-    fake_scaler_table = pa.concat_tables([reco_match_table, reco_match_table])
-    fake_scaler_labels = np.concatenate([np.ones(n_reco_matches), np.zeros(n_reco_matches)])
-    
-    train_fake_scaler_indices, val_fake_scaler_indices = train_test_split(np.arange(len(fake_scaler_table)), test_size=val_size, stratify=fake_scaler_labels, shuffle=True)
-
-    train_fake_scaler_ds = JetDataset(fake_scaler_table.take(train_fake_scaler_indices), fake_scaler_labels[train_fake_scaler_indices], column_names=jet_columns)
-    train_fake_scaler_sampler = RandomSampler(train_fake_scaler_ds)
-    train_fake_scaler_loader = DataLoader(train_fake_scaler_ds, batch_size=batch_size, sampler=train_fake_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-    
-    val_fake_scaler_ds = JetDataset(fake_scaler_table.take(val_fake_scaler_indices), fake_scaler_labels[val_fake_scaler_indices], column_names=jet_columns)
-    val_fake_scaler_sampler = RandomSampler(val_fake_scaler_ds)
-    val_fake_scaler_loader = DataLoader(val_fake_scaler_ds, batch_size=batch_size, sampler=val_fake_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    reco_fake_ds = JetDataset(reco_fake_table, np.zeros(n_reco_fakes), column_names=jet_columns)
-    reco_fake_sampler = SequentialSampler(reco_fake_ds)
-    reco_fake_loader = DataLoader(reco_fake_ds, batch_size=batch_size, sampler=reco_fake_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    fake_scaler_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="fake_scaler", do_debug=do_debug)
-
-    #################################################################################################################################################################################
-    #################################################################################################################################################################################
-    
-    genlvl_table = pa.concat_tables([gen_match_table, gen_miss_table, gen_match_table, gen_miss_table])
-    genlvl_labels = np.concatenate([np.ones(n_gen_matches + n_gen_misses), np.zeros(n_gen_matches + n_gen_misses)])
-    
-    train_genlvl_indices, val_genlvl_indices = train_test_split(np.arange(len(genlvl_table)), test_size=val_size, stratify=genlvl_labels, shuffle=True)
-
-    train_genlvl_ds = JetDataset(genlvl_table.take(train_genlvl_indices), genlvl_labels[train_genlvl_indices], column_names=jet_columns)
-    train_genlvl_sampler = RandomSampler(train_genlvl_ds)
-    train_genlvl_loader = DataLoader(train_genlvl_ds, batch_size=batch_size, sampler=train_genlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    val_genlvl_ds = JetDataset(genlvl_table.take(val_genlvl_indices), genlvl_labels[val_genlvl_indices], column_names=jet_columns)
-    val_genlvl_sampler = SequentialSampler(val_genlvl_ds)
-    val_genlvl_loader = DataLoader(val_genlvl_ds, batch_size=batch_size, sampler=val_genlvl_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    gen_match = JetDataset(gen_match_table, np.zeros(n_gen_matches), column_names=jet_columns)
-    gen_match_sampler = SequentialSampler(gen_match)
-    gen_match_loader = DataLoader(gen_match, batch_size=batch_size, sampler=gen_match_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    gen_lvl_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="particle_level", do_debug=do_debug)
-
-    #################################################################################################################################################################################
-    miss_scaler_table = pa.concat_tables([gen_match_table, gen_match_table])
-    miss_scaler_labels = np.concatenate([np.ones(n_gen_matches), np.zeros(n_gen_matches)])
-    
-    train_miss_scaler_indices, val_miss_scaler_indices = train_test_split(np.arange(len(miss_scaler_table)), test_size=val_size, stratify=miss_scaler_labels, shuffle=True)
-
-    train_miss_scaler_ds = JetDataset(miss_scaler_table.take(train_miss_scaler_indices), miss_scaler_labels[train_miss_scaler_indices], column_names=jet_columns)
-    train_miss_scaler_sampler = RandomSampler(train_miss_scaler_ds)
-    train_miss_scaler_loader = DataLoader(train_miss_scaler_ds, batch_size=batch_size, sampler=train_miss_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-    
-    val_miss_scaler_ds = JetDataset(miss_scaler_table.take(val_miss_scaler_indices), miss_scaler_labels[val_miss_scaler_indices], column_names=jet_columns)
-    val_miss_scaler_sampler = RandomSampler(val_miss_scaler_ds)
-    val_miss_scaler_loader = DataLoader(val_miss_scaler_ds, batch_size=batch_size, sampler=val_miss_scaler_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-
-    gen_miss_ds = JetDataset(gen_miss_table, np.zeros(n_gen_misses), column_names=jet_columns)
-    gen_miss_sampler = SequentialSampler(gen_miss_ds)
-    gen_miss_loader = DataLoader(gen_miss_ds, batch_size=batch_size, sampler=gen_miss_sampler, pin_memory=True, collate_fn=batch_collate, num_workers=num_dl_workers)
-    
-    miss_scaler_model = get_model([len(jet_columns), 256, 256, 256, 1], device=device, name="miss_scaler", do_debug=do_debug)
+    def on_grad_computed(
+            self, net, named_parameters, batch=None, training=False, **kwargs):
+        pass
 
     
-    #################################################################################################################################################################################
-    #################################################################################################################################################################################
-    
-    in_keys = [("features")]
-    out_key = "targets"
+    def _yield_callbacks(self):
+        """Yield all callbacks set on this instance including
+        a set whether its name was set by the user.
 
-    n_iterations = 3
-    w_unfolding = [gen_weights, reco_weights]
+        Handles these cases:
+          * default and user callbacks
+          * callbacks with and without name
+          * initialized and uninitialized callbacks
+          * puts PrintLog(s) last
 
-    num_epochs = 50
-    patience = 5 
-    checkpoint_folder=f"output/checkpoints/{datetime.now().strftime('%Y%m%d_%H%M')}"
+        Yields
+        ------
+        name : str
+          Name of the callback.
 
-    epsilon = 1e-20
+        cb : Callback or Callback instance
+          The callback itself
 
-    for iteration in range(n_iterations):
-        print("###############################################################################################")
-        print(f"Iteration: {iteration}/{n_iterations}")
-        print("###############################################################################################")
+        named_by_user : bool
+          Whether the name was given by the user or determined
+          automatically.
 
-        print("---Setting reco weights...")
-        detlvl_weights = np.concatenate([data_weights, w_unfolding[-1]])
-        train_detlvl_ds.set_sample_weights(detlvl_weights[train_detlvl_indices])
-        val_detlvl_ds.set_sample_weights(detlvl_weights[val_detlvl_indices])
+        """
+        print_logs = []
+        for item in self.callbacks or []:
+            if isinstance(item, (tuple, list)):
+                named_by_user = True
+                name, cb = item
+            else:
+                named_by_user = False
+                cb = item
+                if isinstance(cb, type):  # uninitialized:
+                    name = cb.__name__
+                else:
+                    name = cb.__class__.__name__
+                yield name, cb, named_by_user
+        yield from print_logs
 
-        print("---Calculating pull weights for gen matches...")
-        det_lvl_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/det_lvl", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
-        det_lvl_history = det_lvl_model.fit(train_detlvl_loader, val_detlvl_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=det_lvl_earlystop)
-        predictions = det_lvl_model.predict(reco_match_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
-        gen_match_reweight = predictions / (1. - predictions + epsilon)
-        
-        #################################################################################################################################################################################
-        
-        print("---Calculating pull weights for gen misses...")
-        gen_miss_scaler_weights = np.concatenate([gen_match_reweight, np.ones(n_gen_matches)])
-        train_miss_scaler_ds.set_sample_weights(gen_miss_scaler_weights[train_miss_scaler_indices])
-        val_miss_scaler_ds.set_sample_weights(gen_miss_scaler_weights[val_miss_scaler_indices])
+    def _callbacks_grouped_by_name(self):
+        """Group callbacks by name and collect names set by the user."""
+        callbacks, names_set_by_user = OrderedDict(), set()
+        for name, cb, named_by_user in self._yield_callbacks():
+            if named_by_user:
+                names_set_by_user.add(name)
+            callbacks[name] = callbacks.get(name, []) + [cb]
+        return callbacks, names_set_by_user
 
-        miss_scaler_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/miss_scaler", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
-        miss_scaler_history = miss_scaler_model.fit(train_miss_scaler_loader, val_miss_scaler_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=miss_scaler_earlystop)
-        predictions = miss_scaler_model.predict(gen_miss_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
-        gen_miss_reweight = predictions / (1. - predictions + epsilon)
+    def _uniquely_named_callbacks(self):
+        """Make sure that the returned dict of named callbacks is unique
+        w.r.t. to the callback name. User-defined names will not be
+        renamed on conflict, instead an exception will be raised. The
+        same goes for the event where renaming leads to a conflict.
+        """
+        grouped_cbs, names_set_by_user = self._callbacks_grouped_by_name()
+        for name, cbs in grouped_cbs.items():
+            if len(cbs) > 1 and name in names_set_by_user:
+                raise ValueError("Found duplicate user-set callback name "
+                                 "'{}'. Use unique names to correct this."
+                                 .format(name))
 
-        gen_match_weights = gen_match_weights*gen_match_reweight
-        gen_miss_weights = gen_miss_weights*gen_miss_reweight
+            for i, cb in enumerate(cbs):
+                if len(cbs) > 1:
+                    unique_name = '{}_{}'.format(name, i+1)
+                    if unique_name in grouped_cbs:
+                        raise ValueError("Assigning new callback name failed "
+                                         "since new name '{}' exists already."
+                                         .format(unique_name))
+                else:
+                    unique_name = name
+                yield unique_name, cb
 
-        #################################################################################################################################################################################
-        w_unfolding.append(np.concatenate([gen_match_weights, gen_miss_weights]))
-        #################################################################################################################################################################################
-        
-        print("---Setting gen weights...")
-        genlvl_weights = np.concatenate([w_unfolding[-1], w_unfolding[-3]])
-        train_genlvl_ds.set_sample_weights(genlvl_weights[train_genlvl_indices])
-        val_genlvl_ds.set_sample_weights(genlvl_weights[val_genlvl_indices])
-        
-        print("---Calculating push weights for reco matches...")
-        gen_lvl_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/gen_lvl", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
-        gen_lvl_history = gen_lvl_model.fit(train_genlvl_loader, val_genlvl_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=gen_lvl_earlystop)
-        predictions = gen_lvl_model.predict(gen_match_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
-        reco_match_reweight = predictions / (1. - predictions + epsilon)
+    def initialize_callbacks(self):
+        """Initializes all callbacks and save the result in the
+        ``callbacks_`` attribute.
 
-        #################################################################################################################################################################################
-        
-        print("---Calculating push weights for reco fakes...")
-        reco_fake_scaler_weights = np.concatenate([reco_match_reweight, np.ones(n_reco_matches)])
-        train_fake_scaler_ds.set_sample_weights(reco_fake_scaler_weights[train_fake_scaler_indices])
-        val_fake_scaler_ds.set_sample_weights(reco_fake_scaler_weights[val_fake_scaler_indices])
+        Both ``default_callbacks`` and ``callbacks`` are used (in that
+        order). Callbacks may either be initialized or not, and if
+        they don't have a name, the name is inferred from the class
+        name. The ``initialize`` method is called on all callbacks.
 
-        fake_scaler_earlystop = EarlyStopping(patience=patience, checkpointFolder=f"{checkpoint_folder}/fake_scaler", checkPointFileName=f"model-iter{iteration}-epoch[EPOCH].pth")
-        fake_scaler_history = fake_scaler_model.fit(train_fake_scaler_loader, val_fake_scaler_loader, epochs=num_epochs, in_keys=in_keys, out_key=out_key, early_stopping=fake_scaler_earlystop)
-        predictions = fake_scaler_model.predict(reco_fake_loader, in_keys=in_keys, out_activation=torch.nn.Sigmoid()).cpu().detach().numpy()
-        reco_fake_reweight = predictions / (1. - predictions + epsilon)
+        The final result will be a list of tuples, where each tuple
+        consists of a name and an initialized callback. If names are
+        not unique, a ValueError is raised.
 
-        reco_match_weights = reco_match_weights*reco_match_reweight
-        reco_fake_weights = reco_fake_weights*reco_fake_reweight
+        """
+        callbacks_ = []
 
-        #################################################################################################################################################################################
-        w_unfolding.append(np.concatenate([reco_match_weights, reco_fake_weights]))
-        #################################################################################################################################################################################
-    print("Done!")
+        class Dummy:
+            # We cannot use None as dummy value since None is a
+            # legitimate value to be set.
+            pass
 
-if __name__ == "__main__":
-    main()
+        for name, cb in self._uniquely_named_callbacks():
+            # check if callback itself is changed
+            param_callback = getattr(self, 'callbacks__' + name, Dummy)
+            if param_callback is not Dummy:  # callback itself was set
+                cb = param_callback
+
+            # below: check for callback params
+            # don't set a parameter for non-existing callback
+            params = self.get_params_for('callbacks__{}'.format(name))
+            if (cb is None) and params:
+                raise ValueError("Trying to set a parameter for callback {} "
+                                 "which does not exist.".format(name))
+            if cb is None:
+                continue
+
+            if isinstance(cb, type):  # uninitialized:
+                cb = cb(**params)
+            else:
+                cb.set_params(**params)
+            cb.initialize()
+            callbacks_.append((name, cb))
+
+        # pylint: disable=attribute-defined-outside-init
+        self.callbacks_ = callbacks_
+        return self
+
+    def initialized_instance(self, instance_or_cls, kwargs):
+        """Return an instance initialized with the given parameters
+
+        This is a helper method that deals with several possibilities for a
+        component that might need to be initialized:
+
+        * It is already an instance that's good to go
+        * It is an instance but it needs to be re-initialized
+        * It's not an instance and needs to be initialized
+
+        For the majority of use cases, this comes down to just comes down to
+        just initializing the class with its arguments.
+
+        Parameters
+        ----------
+        instance_or_cls
+          The instance or class or callable to be initialized, e.g.
+          ``self.module``.
+
+        kwargs : dict
+          The keyword arguments to initialize the instance or class. Can be an
+          empty dict.
+
+        Returns
+        -------
+        instance
+          The initialized component.
+
+        """
+        is_init = isinstance(instance_or_cls, torch.nn.Module)
+        if is_init and not kwargs:
+            return instance_or_cls
+        if is_init:
+            return type(instance_or_cls)(**kwargs)
+        return instance_or_cls(**kwargs)
+
+    def initialize_criterion(self):
+        """Initializes the criterion.
+
+        If the criterion is already initialized and no parameter was changed, it
+        will be left as is.
+
+        """
+        kwargs = self.get_params_for('criterion')
+        criterion = self.initialized_instance(self.criterion, kwargs)
+        # pylint: disable=attribute-defined-outside-init
+        self.criterion_ = criterion
+        return self
+
+    def initialize_module(self):
+        """Initializes the module.
+
+        If the module is already initialized and no parameter was changed, it
+        will be left as is.
+
+        """
+        kwargs = self.get_params_for('module')
+        module = self.initialized_instance(self.module, kwargs)
+        # pylint: disable=attribute-defined-outside-init
+        self.module_ = module
+        return self
+
+    def _is_virtual_param(self, key):
+        return any(fnmatch.fnmatch(key, pat) for pat in self.virtual_params_)
+
+    def _virtual_setattr(self, param, val):
+        setattr(self, param, val)
+
+    def _register_virtual_param(self, param_patterns, fn=_virtual_setattr):
+        if not isinstance(param_patterns, list):
+            param_patterns = [param_patterns]
+        for pattern in param_patterns:
+            self.virtual_params_[pattern] = fn
+
+    def _apply_virtual_params(self, virtual_kwargs):
+        for pattern, fn in self.virtual_params_.items():
+            for key, val in virtual_kwargs.items():
+                if not fnmatch.fnmatch(key, pattern):
+                    continue
+                fn(self, key, val)
+
+    def initialize_virtual_params(self):
+        self.virtual_params_ = {}
+
+    def initialize_optimizer(self, triggered_directly=None):
+        """Initialize the model optimizer. If ``self.optimizer__lr``
+        is not set, use ``self.lr`` instead.
+
+        Parameters
+        ----------
+        triggered_directly
+          Deprecated, don't use it anymore.
+
+        """
+        # handle deprecated parameter
+        if triggered_directly is not None:
+            warnings.warn(
+                "The 'triggered_directly' argument to 'initialize_optimizer' is "
+                "deprecated, please don't use it anymore.", DeprecationWarning)
+
+        named_parameters = self.get_all_learnable_params()
+        args, kwargs = self.get_params_for_optimizer(
+            'optimizer', named_parameters)
+
+        # pylint: disable=attribute-defined-outside-init
+        self.optimizer_ = self.optimizer(*args, **kwargs)
+        return self
+
+    def initialize_history(self):
+        """Initializes the history."""
+        if self.history_ is None:
+            self.history_ = History()
+        else:
+            self.history_.clear()
+        return self
+
+    def _format_reinit_msg(self, name, kwargs=None, triggered_directly=True):
+        """Returns a message that informs about re-initializing a compoment.
+
+        Sometimes, the module or optimizer need to be
+        re-initialized. Not only should the user receive a message
+        about this but also should they be informed about what
+        parameters, if any, caused it.
+
+        """
+        msg = "Re-initializing {}".format(name)
+        if triggered_directly and kwargs:
+            msg += (" because the following parameters were re-set: {}"
+                    .format(', '.join(sorted(kwargs))))
+        msg += "."
+        return msg
+
+    @contextmanager
+    def _current_init_context(self, name):
+        try:
+            self.init_context_ = name
+            yield
+        finally:
+            self.init_context_ = None
+
+    def _initialize_virtual_params(self):
+        # this init context is for consistency and not being used at the moment
+        with self._current_init_context('virtual_params'):
+            self.initialize_virtual_params()
+            return self
+
+    def _initialize_callbacks(self):
+        # this init context is for consistency and not being used at the moment
+        with self._current_init_context('callbacks'):
+            if self.callbacks == "disable":
+                self.callbacks_ = []
+                return self
+            self.initialize_callbacks()
+            return self
+
+    def _initialize_criterion(self, reason=None):
+        # _initialize_criterion and _initialize_module share the same logic
+        with self._current_init_context('criterion'):
+            kwargs = {}
+            for criterion_name in self._criteria:
+                kwargs.update(self.get_params_for(criterion_name))
+
+            has_init_criterion = any(
+                isinstance(getattr(self, criterion_name + '_', None), torch.nn.Module)
+                for criterion_name in self._criteria)
+
+            # check if a re-init message is required
+            if kwargs or reason or has_init_criterion:
+                if self.initialized_ and self.verbose:
+                    if reason:
+                        # re-initialization was triggered indirectly
+                        msg = reason
+                    else:
+                        # re-initialization was triggered directly
+                        msg = self._format_reinit_msg("criterion", kwargs)
+                    print(msg)
+
+            self.initialize_criterion()
+
+            # deal with device
+            for name in self._criteria:
+                criterion = getattr(self, name + '_')
+                if isinstance(criterion, torch.nn.Module):
+                    criterion = to_device(criterion, self.device)
+                    criterion = self.torch_compile(criterion, name=name)
+                    setattr(self, name + '_', criterion)
+
+            return self
+
+    def _initialize_module(self, reason=None):
+        # _initialize_criterion and _initialize_module share the same logic
+        with self._current_init_context('module'):
+            kwargs = {}
+            for module_name in self._modules:
+                kwargs.update(self.get_params_for(module_name))
+
+            has_init_module = any(
+                isinstance(getattr(self, module_name + '_', None), torch.nn.Module)
+                for module_name in self._modules)
+
+            if kwargs or reason or has_init_module:
+                if self.initialized_ and self.verbose:
+                    if reason:
+                        # re-initialization was triggered indirectly
+                        msg = reason
+                    else:
+                        # re-initialization was triggered directly
+                        msg = self._format_reinit_msg("module", kwargs)
+                    print(msg)
+
+            self.initialize_module()
+
+            # deal with device
+            for name in self._modules:
+                module = getattr(self, name + '_')
+                if isinstance(module, torch.nn.Module):
+                    module = to_device(module, self.device)
+                    module = self.torch_compile(module, name=name)
+                    setattr(self, name + '_', module)
+
+            return self
+
+    # pylint: disable=unused-argument
+    def torch_compile(self, module, name):
+        #Compile torch modules
+        # TODO: adjust docstring once we no longer support PyTorch versions without compile
+        if not self.compile:
+            return module
+
+        # Whether torch.compile is available (PyTorch 2.0 and up)
+        torch_compile_available = hasattr(torch, 'compile')
+        if not torch_compile_available:
+            raise ValueError(
+                "Setting compile=True but torch.compile is not available. Please "
+                f"check that your installed PyTorch version ({torch.__version__}) "
+                "supports torch.compile (requires v1.14, v2.0 or higher)")
+
+        params = self.get_params_for('compile')
+        module_compiled = torch.compile(module, **params)
+        return module_compiled
+
+    def get_all_learnable_params(self):
+        """Yield the learnable parameters of all modules
+
+        Typically, this will yield the ``named_parameters`` of the standard
+        module of the net. However, if you add custom modules or if your
+        criterion has learnable parameters, these are returned as well.
+
+        If you want your optimizer to only update the parameters of some but not
+        all modules, you should override :meth:`.initialize_module` and match
+        the corresponding modules and optimizers there:
+
+        .. code:: python
+
+            class MyNet(NeuralNet):
+
+                def initialize_optimizer(self, *args, **kwargs):
+                    # first initialize the normal optimizer
+                    named_params = self.module_.named_parameters()
+                    args, kwargs = self.get_params_for_optimizer('optimizer', named_params)
+                    self.optimizer_ = self.optimizer(*args, **kwargs)
+
+                    # next add an another optimizer called 'optimizer2_' that is
+                    # only responsible for training 'module2_'
+                    named_params = self.module2_.named_parameters()
+                    args, kwargs = self.get_params_for_optimizer('optimizer2', named_params)
+                    self.optimizer2_ = torch.optim.SGD(*args, **kwargs)
+                    return self
+
+        Yields
+        ------
+        named_parameters : generator of parameter name and parameter
+          A generator over all module parameters, yielding both the name of the
+          parameter as well as the parameter itself. Use this, for instance, to
+          pass the named parameters to :meth:`.get_params_for_optimizer`.
+
+        """
+        # Note: we have to filter out potential duplicate parameters. This can
+        # happen when a module references another module (e.g. the criterion
+        # references the module), thus yielding that module's parameters again.
+        # The parameter name can be difference, therefore we check only the
+        # identity of the parameter itself.
+        seen = set()
+        for name in self._modules + self._criteria:
+            module = getattr(self, name + '_')
+            named_parameters = getattr(module, 'named_parameters', None)
+            if not named_parameters:
+                continue
+
+            for param_name, param in named_parameters():
+                if param in seen:
+                    continue
+
+                seen.add(param)
+                yield param_name, param
+
+    def _initialize_optimizer(self, reason=None):
+        with self._current_init_context('optimizer'):
+            if self.initialized_ and self.verbose:
+                if reason:
+                    # re-initialization was triggered indirectly
+                    msg = reason
+                else:
+                    # re-initialization was triggered directly
+                    msg = self._format_reinit_msg("optimizer", triggered_directly=False)
+                print(msg)
+
+            self.initialize_optimizer()
+
+            # register the virtual params for all optimizers
+            for name in self._optimizers:
+                param_pattern = [name + '__param_groups__*__*', name + '__*']
+                if name == 'optimizer':  # 'lr' is short for optimizer__lr
+                    param_pattern.append('lr')
+                setter = partial(
+                    optimizer_setter,
+                    optimizer_attr=name + '_',
+                    optimizer_name=name,
+                )
+                self._register_virtual_param(param_pattern, setter)
+            return self
+
+    def _initialize_history(self):
+        # this init context is for consistency and not being used at the moment
+        with self._current_init_context('history'):
+            self.initialize_history()
+            return self
+
+    def initialize(self):
+        """Initializes all of its components and returns self."""
+        self.check_training_readiness()
+
+        self._initialize_virtual_params()
+        self._initialize_callbacks()
+        self._initialize_module()
+        self._initialize_criterion()
+        self._initialize_optimizer()
+        self._initialize_history()
+
+        self._validate_params()
+
+        self.initialized_ = True
+        return self
+
+    def check_training_readiness(self):
+        """Check that the net is ready to train"""
+        is_trimmed_for_prediction = getattr(self, '_trimmed_for_prediction', False)
+        if is_trimmed_for_prediction:
+            msg = (
+                "The net's attributes were trimmed for prediction, thus it cannot "
+                "be used for training anymore"
+            )
+            raise SkorchTrainingImpossibleError(msg)
+
+    def check_data(self, X, y=None):
+        pass
+
+    def check_is_fitted(self, attributes=None, *args, **kwargs):
+        """Checks whether the net is initialized
+
+        Parameters
+        ----------
+        attributes : iterable of str or None (default=None)
+          All the attributes that are strictly required of a fitted
+          net. By default, this is the `module_` attribute.
+
+        Other arguments as in
+        ``sklearn.utils.validation.check_is_fitted``.
+
+        Raises
+        ------
+        skorch.exceptions.NotInitializedError
+          When the given attributes are not present.
+
+        """
+        # first check attributes argument, but if it's empty, check that the
+        # indicated _modules exist, and if those are not defined, assume that
+        # the standard 'module_' attribute should exist
+        attributes = (
+            attributes or [module + '_' for module in self._modules] or ['module_']
+        )
+        check_is_fitted(self, attributes, *args, **kwargs)
+
+    def _set_training(self, training=True):
+        """Set training/evaluation mode on all modules and criteria that are torch
+        Modules.
+
+        Parameters
+        ----------
+        training : bool (default=True)
+          Whether to set to training mode (True) or evaluation mode (False).
+
+        """
+        for module_name in self._modules + self._criteria:
+            module = getattr(self, module_name + '_')
+            if isinstance(module, torch.nn.Module):
+                module.train(training)
+
+    def _get_params_for(self, prefix):
+        return params_for(prefix, self.__dict__)
+
+    def get_params_for(self, prefix):
+        """Collect and return init parameters for an attribute.
+
+        Attributes could be, for instance, pytorch modules, criteria,
+        or data loaders (for optimizers, use
+        :meth:`.get_params_for_optimizer` instead). Use the returned
+        arguments to initialize the given attribute like this:
+
+        .. code:: python
+
+            # inside initialize_module method
+            kwargs = self.get_params_for('module')
+            self.module_ = self.module(**kwargs)
+
+        Proceed analogously for the criterion etc.
+
+        The reason to use this method is so that it's possible to
+        change the init parameters with :meth:`.set_params`, which
+        in turn makes grid search and other similar things work.
+
+        Note that in general, as a user, you never have to deal with
+        this method because :meth:`.initialize_module` etc. are
+        already taking care of this. You only need to deal with this
+        if you override :meth:`.initialize_module` (or similar
+        methods) because you have some custom code that requires it.
+
+        Parameters
+        ----------
+        prefix : str
+          The name of the attribute whose arguments should be
+          returned. E.g. for the module, it should be ``'module'``.
+
+        Returns
+        -------
+        kwargs : dict
+          Keyword arguments to be used as init parameters.
+
+        """
+        return self._get_params_for(prefix)
+
+    def _get_params_for_optimizer(self, prefix, named_parameters):
+        kwargs = self.get_params_for(prefix)
+        params = list(named_parameters)
+        pgroups = []
+
+        for pattern, group in kwargs.pop('param_groups', []):
+            matches = [i for i, (name, _) in enumerate(params) if
+                       fnmatch.fnmatch(name, pattern)]
+            if matches:
+                p = [params.pop(i)[1] for i in reversed(matches)]
+                pgroups.append({'params': p, **group})
+
+        if params:
+            pgroups.append({'params': [p for _, p in params]})
+
+        args = (pgroups,)
+
+        # 'lr' is an optimizer param that can be set without the 'optimizer__'
+        # prefix because it's so common
+        if 'lr' not in kwargs:
+            kwargs['lr'] = self.lr
+        return args, kwargs
+
+    def get_params_for_optimizer(self, prefix, named_parameters):
+        """Collect and return init parameters for an optimizer.
+        """
+        args, kwargs = self._get_params_for_optimizer(prefix, named_parameters)
+        return args, kwargs
+
+    def _get_param_names(self):
+        return [k for k in self.__dict__ if not k.endswith('_')]
+
+    def _get_params_callbacks(self, deep=True):
+        """sklearn's .get_params checks for `hasattr(value,
+        'get_params')`. This returns False for a list. But our
+        callbacks reside within a list. Hence their parameters have to
+        be retrieved separately.
+        """
+        params = {}
+        if not deep:
+            return params
+
+        callbacks_ = getattr(self, 'callbacks_', [])
+        for key, val in callbacks_:
+            name = 'callbacks__' + key
+            params[name] = val
+            if val is None:  # callback deactivated
+                continue
+            for subkey, subval in val.get_params().items():
+                subname = name + '__' + subkey
+                params[subname] = subval
+        return params
+
+    def get_params(self, deep=True, **kwargs):
+        params = super().get_params(deep=deep, **kwargs)
+        # Callback parameters are not returned by .get_params, needs
+        # special treatment.
+        params_cb = self._get_params_callbacks(deep=deep)
+        params.update(params_cb)
+
+        # don't include the following attributes
+        to_exclude = {'_modules', '_criteria', '_optimizers'}
+        return {key: val for key, val in params.items() if key not in to_exclude}
+
+    def _validate_params(self):
+        """Check argument names passed at initialization.
+
+        Note: This method is similar to
+        :meth:`sklearn.base.BaseEstimator._validate_params` but doesn't use its
+        machinery.
+
+        Raises
+        ------
+        ValueError
+          Raises a ValueError if one or more arguments don't seem to
+          match or are malformed.
+
+        Example
+        -------
+        >>> net = NeuralNetClassifier(MyModule, iterator_train_shuffle=True)
+        ValueError: Got an unexpected argument iterator_train_shuffle,
+        did you mean iterator_train__shuffle?
+
+        """
+        # warn about usage of iterator_valid__shuffle=True, since this
+        # is almost certainly not what the user wants
+        if 'iterator_valid__shuffle' in self._params_to_validate:
+            if self.iterator_valid__shuffle:
+                warnings.warn(
+                    "You set iterator_valid__shuffle=True; this is most likely not "
+                    "what you want because the values returned by predict and "
+                    "predict_proba will be shuffled.",
+                    UserWarning)
+
+        # check for wrong arguments
+        unexpected_kwargs = []
+        missing_dunder_kwargs = []
+        for key in sorted(self._params_to_validate):
+            if key.endswith('_'):
+                continue
+
+            # see https://github.com/skorch-dev/skorch/pull/590 for
+            # why this must be sorted
+            for prefix in sorted(self.prefixes_, key=lambda s: (-len(s), s)):
+                if key == prefix:
+                    # e.g. someone did net.set_params(callbacks=[])
+                    break
+                if key.startswith(prefix):
+                    if not key.startswith(prefix + '__'):
+                        missing_dunder_kwargs.append((prefix, key))
+                    break
+            else:  # no break means key didn't match a prefix
+                unexpected_kwargs.append(key)
+
+        msgs = []
+        if unexpected_kwargs:
+            tmpl = ("__init__() got unexpected argument(s) {}. "
+                    "Either you made a typo, or you added new arguments "
+                    "in a subclass; if that is the case, the subclass "
+                    "should deal with the new arguments explicitly.")
+            msg = tmpl.format(', '.join(sorted(unexpected_kwargs)))
+            msgs.append(msg)
+
+        for prefix, key in sorted(missing_dunder_kwargs, key=lambda tup: tup[1]):
+            tmpl = "Got an unexpected argument {}, did you mean {}?"
+            suffix = key[len(prefix):].lstrip('_')
+            suggestion = prefix + '__' + suffix
+            msgs.append(tmpl.format(key, suggestion))
+
+        valid_vals_use_caching = ('auto', False, True)
+        if self.use_caching not in valid_vals_use_caching:
+            msgs.append(
+                f"Incorrect value for use_caching used ('{self.use_caching}'), "
+                f"use one of: {', '.join(map(str, valid_vals_use_caching))}"
+            )
+
+        if msgs:
+            full_msg = '\n'.join(msgs)
+            raise ValueError(full_msg)
+
+    def _check_deprecated_params(self, **kwargs):
+        pass
+
+    def set_params(self, **kwargs):
+        """Set the parameters of this class.
+
+        Valid parameter keys can be listed with ``get_params()``.
+
+        Returns
+        -------
+        self
+
+        """
+        self._check_deprecated_params(**kwargs)
+        normal_params, cb_params, special_params = {}, {}, {}
+        virtual_params = {}
+
+        for key, val in kwargs.items():
+            if self._is_virtual_param(key):
+                virtual_params[key] = val
+            elif key.startswith('callbacks'):
+                cb_params[key] = val
+                self._params_to_validate.add(key)
+            elif any(key.startswith(prefix) for prefix in self.prefixes_):
+                special_params[key] = val
+                self._params_to_validate.add(key)
+            elif '__' in key:
+                special_params[key] = val
+                self._params_to_validate.add(key)
+            else:
+                normal_params[key] = val
+
+        self._apply_virtual_params(virtual_params)
+        super().set_params(**normal_params)
+
+        for key, val in special_params.items():
+            if key.endswith('_'):
+                raise ValueError(
+                    "Something went wrong here. Please open an issue on "
+                    "https://github.com/skorch-dev/skorch/issues detailing what "
+                    "caused this error.")
+            setattr(self, key, val)
+
+        if cb_params:
+            # callbacks need special treatmeant since they are list of tuples
+            self._initialize_callbacks()
+            self._set_params_callback(**cb_params)
+            vars(self).update(cb_params)
+
+        # If the net is not initialized or there are no special params, we can
+        # exit as this point, because the special_params have been set as
+        # attributes and will be applied by initialize() at a later point in
+        # time.
+        if not self.initialized_ or not special_params:
+            return self
+
+        # if net is initialized, checking kwargs is possible
+        self._validate_params()
+
+        ######################################################
+        # Below: Re-initialize parts of the net if necessary #
+        ######################################################
+
+        # if there are module params, reinit module, criterion, optimizer
+        # if there are criterion params, reinit criterion, optimizer
+        # optimizer params don't need to be checked, as they are virtual
+        reinit_module = False
+        reinit_criterion = False
+        reinit_optimizer = False
+
+        component_names = {key.split('__', 1)[0] for key in special_params}
+        for prefix in component_names:
+            if (prefix in self._modules) or (prefix == 'compile'):
+                reinit_module = True
+                reinit_criterion = True
+                reinit_optimizer = True
+
+                module_params = {k: v for k, v in special_params.items()
+                                 if k.startswith(prefix)}
+                msg_module = self._format_reinit_msg(
+                    "module", module_params, triggered_directly=True)
+                msg_criterion = self._format_reinit_msg(
+                    "criterion", triggered_directly=False)
+                msg_optimizer = self._format_reinit_msg(
+                    "optimizer", triggered_directly=False)
+
+                # if any module is modified, everything needs to be
+                # re-initialized, no need to check any further
+                break
+
+            if prefix in self._criteria:
+                reinit_criterion = True
+                reinit_optimizer = True
+
+                criterion_params = {k: v for k, v in special_params.items()
+                                    if k.startswith(prefix)}
+                msg_criterion = self._format_reinit_msg(
+                    "criterion", criterion_params, triggered_directly=True)
+                msg_optimizer = self._format_reinit_msg(
+                    "optimizer", triggered_directly=False)
+
+        if not (reinit_module or reinit_criterion or reinit_optimizer):
+            raise ValueError("Something went wrong, please open an issue on "
+                             "https://github.com/skorch-dev/skorch/issues")
+
+        if reinit_module:
+            self._initialize_module(reason=msg_module)
+        if reinit_criterion:
+            self._initialize_criterion(reason=msg_criterion)
+        if reinit_optimizer:
+            self._initialize_optimizer(reason=msg_optimizer)
+
+        return self
+
+    def _set_params_callback(self, **params):
+        """Special handling for setting params on callbacks."""
+        # model after sklearn.utils._BaseCompostion._set_params
+        # 1. All steps
+        if 'callbacks' in params:
+            setattr(self, 'callbacks', params.pop('callbacks'))
+
+        # 2. Step replacement
+        names, _ = zip(*getattr(self, 'callbacks_'))
+        for key in params.copy():
+            name = key[11:]  # drop 'callbacks__'
+            if '__' not in name and name in names:
+                self._replace_callback(name, params.pop(key))
+
+        # 3. Step parameters and other initilisation arguments
+        for key in params.copy():
+            name = key[11:]
+            part0, part1 = name.split('__')
+            kwarg = {part1: params.pop(key)}
+            callback = dict(self.callbacks_).get(part0)
+            if callback is not None:
+                callback.set_params(**kwarg)
+            else:
+                raise ValueError(
+                    "Trying to set a parameter for callback {} "
+                    "which does not exist.".format(part0))
+
+        return self
+
+    def _replace_callback(self, name, new_val):
+        # assumes `name` is a valid callback name
+        callbacks_new = self.callbacks_[:]
+        for i, (cb_name, _) in enumerate(callbacks_new):
+            if cb_name == name:
+                callbacks_new[i] = (name, new_val)
+                break
+        setattr(self, 'callbacks_', callbacks_new)
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        cuda_attrs = {}
+        for prefix in self.cuda_dependent_attributes_:
+            for key in state:
+                if isinstance(key, str) and key.startswith(prefix):
+                    cuda_attrs[key] = state[key]
+
+        for k in cuda_attrs:
+            state.pop(k)
+
+        with tempfile.SpooledTemporaryFile() as f:
+            pickle.dump(cuda_attrs, f)
+            f.seek(0)
+            state['__cuda_dependent_attributes__'] = f.read()
+
+        return state
+
+    def __setstate__(self, state):
+        # get_map_location will automatically choose the
+        # right device in cases where CUDA is not available.
+        map_location = get_map_location(state['device'])
+        load_kwargs = {'map_location': map_location}
+        state['device'] = self._check_device(state['device'], map_location)
+        torch_load_kwargs = state.get('torch_load_kwargs') or get_default_torch_load_kwargs()
+
+        with tempfile.SpooledTemporaryFile() as f:
+            unpickler = _TorchLoadUnpickler(
+                f,
+                map_location=map_location,
+                torch_load_kwargs=torch_load_kwargs,
+            )
+            f.write(state['__cuda_dependent_attributes__'])
+            f.seek(0)
+            try:
+                cuda_attrs = unpickler.load()
+            except pickle.UnpicklingError:
+                # This object was saved using skorch from before switching to the
+                # custom unpickler, i.e. with torch.save. Fall back to the old loading
+                # code using torch.load. Unfortunately, this means that the user may
+                # get the FutureWarning about weights_only=False. They need to re-save
+                # the net to get rid of the warning
+                f.seek(0)
+                cuda_attrs = torch.load(f, **load_kwargs)
+
+        state.update(cuda_attrs)
+        state.pop('__cuda_dependent_attributes__')
+
+        self.__dict__.update(state)
+
+    def _register_attribute(
+            self,
+            name,
+            attr,
+            prefixes=True,
+            cuda_dependent_attributes=True,
+    ):
+        """Add attribute name to prefixes_ and cuda_dependent_attributes_,
+        keep track of modules, criteria, and optimizers.
+        """
+        name = name.rstrip('_')  # module_ -> module
+
+        # Always copy the collections to avoid mutation
+        if prefixes:
+            self.prefixes_ = self.prefixes_[:] + [name]
+
+        if cuda_dependent_attributes:
+            self.cuda_dependent_attributes_ = (
+                self.cuda_dependent_attributes_[:] + [name + '_'])
+
+        # make sure to not double register -- this should never happen, but
+        # still better to check
+        if (self.init_context_ == 'module') and (name not in self._modules):
+            self._modules = self._modules[:] + [name]
+        elif (self.init_context_ == 'criterion') and (name not in self._criteria):
+            self._criteria = self._criteria[:] + [name]
+        elif (self.init_context_ == 'optimizer') and (name not in self._optimizers):
+            self._optimizers = self._optimizers[:] + [name]
+
+    def _unregister_attribute(
+            self,
+            name,
+            prefixes=True,
+            cuda_dependent_attributes=True,
+    ):
+        """Remove attribute name from prefixes_, cuda_dependent_attributes_ and the
+        _modules/_criteria/_optimizers list if applicable.
+        """
+        name = name.rstrip('_')  # module_ -> module
+
+        # copy the lists to avoid mutation
+        if prefixes:
+            self.prefixes_ = [p for p in self.prefixes_ if p != name]
+
+        if cuda_dependent_attributes:
+            self.cuda_dependent_attributes_ = [
+                a for a in self.cuda_dependent_attributes_ if a != name + '_']
+
+        if name in self._modules:
+            self._modules = [p for p in self._modules if p != name]
+        if name in self._criteria:
+            self._criteria = [p for p in self._criteria if p != name]
+        if name in self._optimizers:
+            self._optimizers = [p for p in self._optimizers if p != name]
+
+    def _check_settable_attr(self, name, attr):
+        """Check whether this attribute is valid for it to be settable.
+
+        E.g. for it to work with set_params.
+
+        """
+        if (self.init_context_ is None) and isinstance(attr, torch.nn.Module):
+            msg = ("Trying to set torch compoment '{}' outside of an initialize method."
+                   " Consider defining it inside 'initialize_module'".format(name))
+            raise SkorchAttributeError(msg)
+
+        if (self.init_context_ is None) and isinstance(attr, torch.optim.Optimizer):
+            msg = ("Trying to set torch compoment '{}' outside of an initialize method."
+                   " Consider defining it inside 'initialize_optimizer'".format(name))
+            raise SkorchAttributeError(msg)
+
+        if not name.endswith('_'):
+            msg = ("Names of initialized modules or optimizers should end "
+                   "with an underscore (e.g. '{}_')".format(name))
+            raise SkorchAttributeError(msg)
+
+    def __setattr__(self, name, attr):
+        """Set an attribute on the net
+
+        When a custom net with additional torch modules or optimizers
+        is created, those attributes are added to ``prefixes_`` and
+        ``cuda_dependent_attributes_`` automatically.
+
+        These components are also tracked to correctly set the device.
+
+        """
+        # If it's a
+        # 1. known attribute or
+        # 2. special param like module__num_units or
+        # 3. the net is being __init__-ialized
+        # 4. not a torch module/optimizer instance or class
+        # just setattr as usual.
+        # For a discussion why we chose this implementation, see here:
+        # https://github.com/skorch-dev/skorch/pull/597
+        is_known = name in self.prefixes_ or name.rstrip('_') in self.prefixes_
+        is_special_param = '__' in name
+        first_init = not hasattr(self, 'initialized_')
+        is_torch_component = isinstance(attr, (torch.nn.Module, torch.optim.Optimizer))
+
+        if not (is_known or is_special_param or first_init) and is_torch_component:
+            self._check_settable_attr(name, attr)
+            self._register_attribute(name, attr)
+        super().__setattr__(name, attr)
+
+    def __delattr__(self, name):
+        # take extra precautions to undo the changes made in __setattr__
+        self._unregister_attribute(name)
+        super().__delattr__(name)
+
+    def _get_module(self, name, msg):
+        """Return the PyTorch module with the given name
+
+        If a module with such a name doesn't exist, also check the
+        name without trailing underscore.
+
+        Raises
+        ------
+        AttributeError
+          If no module with the given name could be found, with a
+          message formatted according to the passed ``msg`` argument.
+
+        """
+        try:
+            module = getattr(self, name)
+            if not hasattr(module, 'state_dict'):
+                raise AttributeError
+            return module
+        except AttributeError:
+            if name.endswith('_'):
+                name = name[:-1]
+            raise AttributeError(msg.format(name=name))
+
+    def save_params(
+            self,
+            f_params=None,
+            f_optimizer=None,
+            f_criterion=None,
+            f_history=None,
+            use_safetensors=False,
+            **kwargs):
+        """Saves the module's parameters, history, and optimizer,
+        not the whole object.
+        """
+        def _save_state_dict(state_dict, f_name):
+                torch.save(module.state_dict(), f_name)
+
+        kwargs_module, kwargs_other = _check_f_arguments(
+            'save_params',
+            f_params=f_params,
+            f_optimizer=f_optimizer,
+            f_criterion=f_criterion,
+            f_history=f_history,
+            **kwargs)
+
+        if not kwargs_module and not kwargs_other:
+            if self.verbose:
+                print("Nothing to save")
+            return
+
+        msg_init = (
+            "Cannot save state of an un-initialized model. "
+            "Please initialize first by calling .initialize() "
+            "or by fitting the model with .fit(...).")
+        msg_module = (
+            "You are trying to save 'f_{name}' but for that to work, the net "
+            "needs to have an attribute called 'net.{name}_' that is a PyTorch "
+            "Module or Optimizer; make sure that it exists and check for typos.")
+
+        for attr, f_name in kwargs_module.items():
+            # valid attrs can be 'module_', 'optimizer_', etc.
+            if attr.endswith('_') and not self.initialized_:
+                self.check_is_fitted([attr], msg=msg_init)
+            module = self._get_module(attr, msg=msg_module)
+            _save_state_dict(module.state_dict(), f_name)
+
+        # only valid key in kwargs_other is f_history
+        f_history = kwargs_other.get('f_history')
+        if f_history is not None:
+            self.history.to_file(f_history)
+
+    def _check_device(self, requested_device, map_device):
+        """Compare the requested device with the map device and
+        return the map device if it differs from the requested device
+        along with a warning.
+        """
+        if requested_device is None:
+            # user has set net.device=None, we don't know the type, use fallback
+            msg = (
+                f"Setting self.device = {map_device} since the requested device "
+                f"was not specified"
+            )
+            warnings.warn(msg, DeviceWarning)
+            return map_device
+
+        type_1 = torch.device(requested_device)
+        type_2 = torch.device(map_device)
+        if type_1 != type_2:
+            warnings.warn(
+                'Setting self.device = {} since the requested device ({}) '
+                'is not available.'.format(map_device, requested_device),
+                DeviceWarning)
+            return map_device
+        # return requested_device instead of map_device even though we
+        # checked for *type* equality as we might have 'cuda:0' vs. 'cuda:1'.
+        return requested_device
+
+    def load_params(
+            self,
+            f_params=None,
+            f_optimizer=None,
+            f_criterion=None,
+            f_history=None,
+            checkpoint=None,
+            use_safetensors=False,
+            **kwargs):
+        """Loads the the module's parameters, history, and optimizer,
+        not the whole object.
+        """
+        torch_load_kwargs = self.torch_load_kwargs
+        if torch_load_kwargs is None:
+            torch_load_kwargs = get_default_torch_load_kwargs()
+
+        def _get_state_dict(f_name):
+            map_location = get_map_location(self.device)
+            self.device = self._check_device(self.device, map_location)
+            return torch.load(f_name, map_location=map_location, **torch_load_kwargs)
+
+        kwargs_full = {}
+        if checkpoint is not None:
+            if not self.initialized_:
+                self.initialize()
+            if f_history is None and checkpoint.f_history is not None:
+                self.history = History.from_file(checkpoint.f_history_)
+            kwargs_full.update(**checkpoint.get_formatted_files(self))
+
+        # explicit arguments may override checkpoint arguments
+        kwargs_full.update(**kwargs)
+        for key, val in [('f_params', f_params), ('f_optimizer', f_optimizer),
+                         ('f_criterion', f_criterion), ('f_history', f_history)]:
+            if val:
+                kwargs_full[key] = val
+
+        kwargs_module, kwargs_other = _check_f_arguments('load_params', **kwargs_full)
+
+        if not kwargs_module and not kwargs_other:
+            if self.verbose:
+                print("Nothing to load")
+            return
+
+        # only valid key in kwargs_other is f_history
+        f_history = kwargs_other.get('f_history')
+        if f_history is not None:
+            self.history = History.from_file(f_history)
+
+        msg_init = (
+            "Cannot load state of an un-initialized model. "
+            "Please initialize first by calling .initialize() "
+            "or by fitting the model with .fit(...).")
+        msg_module = (
+            "You are trying to load 'f_{name}' but for that to work, the net "
+            "needs to have an attribute called 'net.{name}_' that is a PyTorch "
+            "Module or Optimizer; make sure that it exists and check for typos.")
+
+        for attr, f_name in kwargs_module.items():
+            # valid attrs can be 'module_', 'optimizer_', etc.
+            if attr.endswith('_') and not self.initialized_:
+                self.check_is_fitted([attr], msg=msg_init)
+            module = self._get_module(attr, msg=msg_module)
+            state_dict = _get_state_dict(f_name)
+            module.load_state_dict(state_dict)
+
+    def __repr__(self):
+        to_include = ['module']
+        to_exclude = []
+        parts = [str(self.__class__) + '[uninitialized](']
+        if self.initialized_:
+            parts = [str(self.__class__) + '[initialized](']
+            to_include = ['module_']
+            to_exclude = ['module__']
+
+        for key, val in sorted(self.__dict__.items()):
+            if not any(key.startswith(prefix) for prefix in to_include):
+                continue
+            if any(key.startswith(prefix) for prefix in to_exclude):
+                continue
+
+            val = str(val)
+            if '\n' in val:
+                val = '\n  '.join(val.split('\n'))
+            parts.append('  {}={},'.format(key, val))
+
+        parts.append(')')
+        return '\n'.join(parts)
+

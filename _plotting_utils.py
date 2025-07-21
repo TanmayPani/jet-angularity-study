@@ -38,8 +38,8 @@ def plot_ratios(
     fill_style="none",
     line_style="none",
     markersize=10,
-    markers1=["none"],
-    markers2=["none"],
+    markers1=None,
+    markers2=None,
 ):
     axs = fig.subplots(
         2,
@@ -49,17 +49,34 @@ def plot_ratios(
         gridspec_kw={"hspace": 0, "top": 0.85, "bottom": 0.1},
     )
 
+    for iden, (count, error) in enumerate(zip(counts2, errors2)):
+        label = str(iden) if labels2 is None else labels2[iden]
+        marker = "o" if markers2 is None else markers2[iden]
+        #print(iden, label, marker)
+        plot_hist(
+            axs[0],
+            bins,
+            count,
+            errors=error,
+            label=label,
+            marker=marker,
+            fillstyle=fill_style,
+            linestyle=line_style,
+            markersize=markersize,
+        )
+
     for inum, (count1, error1, ratios1, ratio_errs1) in enumerate(
         zip(counts1, errors1, ratios, ratio_errs)
     ):
         label1 = str(inum) if labels1 is None else labels1[inum]
+        marker1 = "o" if markers1 is None else markers1[inum]
         plot_hist(
             axs[0],
             bins,
             count1,
             errors=error1,
             label=label1,
-            marker=markers1[inum],
+            marker=marker1,
             fillstyle=fill_style,
             linestyle=line_style,
             markersize=markersize,
@@ -69,17 +86,8 @@ def plot_ratios(
             zip(counts2, errors2, ratios1, ratio_errs1)
         ):
             label2 = str(iden) if labels2 is None else labels2[iden]
-            plot_hist(
-                axs[0],
-                bins,
-                count2,
-                errors=error2,
-                label=label2,
-                marker=markers2[iden],
-                fillstyle=fill_style,
-                linestyle=line_style,
-                markersize=markersize,
-            )
+            marker2 = "o" if markers2 is None else markers2[iden]
+            #print(inum, iden, label1, label2, marker1, marker2)
             if ratio is None:
                 ratio = count1 / count2
                 if error1 is not None and error2 is not None:
@@ -92,7 +100,7 @@ def plot_ratios(
                 ratio,
                 errors=ratio_err,
                 label=f"{label1}/{label2}",
-                marker=markers2[iden],
+                marker=marker2,
                 fillstyle=fill_style,
                 linestyle=line_style,
                 markersize=markersize,
