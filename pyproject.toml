@@ -1,0 +1,41 @@
+[project]
+name = "jet-angularity-study"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+  "fastjet>=3.4.3.1",
+  "hepstats>=0.9.2",
+  "matplotlib>=3.10.1",
+  "particle>=0.25.2",
+  "uproot>=5.6.0",
+  "vector>=1.6.1",
+  "numba>=0.61",
+  "scipy>=1.15.2",
+  "churten",
+  "pythia8mc>=8.315.0",
+  "utils",
+]
+
+[dependency-groups]
+dev = [
+  "PyQt6",
+  "hist[fit,plot]>=2.8.1",
+  "mplhep>=0.3.59",
+  "uproot-browser>=0.7.2",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+
+[tool.uv]
+prerelease = "allow"
+
+[tool.uv.sources]
+utils = {workspace = true}
+churten = { path = "/home/tanmaypani/star-workspace/packages/churten", editable = true}
+
+[tool.uv.workspace]
+members = ["utils"]

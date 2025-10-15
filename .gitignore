@@ -1,0 +1,20 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.cache/
+1
+@
+
+#script outputs
+extra-*
+plot_output/
+outputs/
+logs/
+test/
+partitioned_datasets/
+# Virtual environments
+.venv

@@ -1,0 +1,26 @@
+! Detroit tune specific changes
+
+PDF:pSet = 17
+MultipartonInteractions:bProfile = 2
+MultipartonInteractions:ecmRef = 200
+MultipartonInteractions:pT0Ref = 1.40
+MultipartonInteractions:ecmPow = 0.135
+MultipartonInteractions:coreRadius = 0.56
+MultipartonInteractions:coreFraction = 0.78
+ColourReconnection:range = 5.4
+
+! Switching off decays handled by Geant in embedding
+
+111:mayDecay =  off
+211:mayDecay =  off
+221:mayDecay =  off
+321:mayDecay =  off
+310:mayDecay =  off
+130:mayDecay =  off
+3122:mayDecay =  off
+3212:mayDecay =  off
+3112:mayDecay =  off
+3222:mayDecay =  off
+3312:mayDecay =  off
+3322:mayDecay =  off
+3334:mayDecay =  off
