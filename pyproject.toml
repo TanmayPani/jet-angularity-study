@@ -35,7 +35,8 @@ prerelease = "allow"
 
 [tool.uv.sources]
 utils = {workspace = true}
-churten = { path = "/home/tanmaypani/star-workspace/packages/churten", editable = true}
+churten = { git = "https://github.com/TanmayPani/churten", branch = "main"}
+#churten = { path = "/home/tanmaypani/star-workspace/packages/churten", editable = true}
 
 [tool.uv.workspace]
 members = ["utils"]

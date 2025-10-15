@@ -177,7 +177,7 @@ wheels = [
 [[package]]
 name = "churten"
 version = "0.0.1"
-source = { editable = "../packages/churten" }
+source = { git = "https://github.com/TanmayPani/churten?branch=main#8c11f2253217062d229916a381360d6ec9690f90" }
 dependencies = [
     { name = "numpy" },
     { name = "pyarrow" },
@@ -188,29 +188,6 @@ dependencies = [
     { name = "torchdata" },
     { name = "torchvision", version = "0.23.0", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "platform_machine == 'aarch64' and sys_platform == 'linux'" },
     { name = "torchvision", version = "0.23.0+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "platform_machine != 'aarch64' or sys_platform != 'linux'" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", specifier = ">=2.2.4" },
-    { name = "pyarrow", specifier = ">=19.0.1" },
-    { name = "scikit-learn", specifier = ">=1.6.1" },
-    { name = "tabulate" },
-    { name = "tensordict" },
-    { name = "torch", index = "https://download.pytorch.org/whl/cu129" },
-    { name = "torchdata", index = "https://download.pytorch.org/whl/nightly/cpu" },
-    { name = "torchvision", index = "https://download.pytorch.org/whl/cu129" },
-]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "ipykernel", specifier = ">=6.29.5" },
-    { name = "matplotlib", specifier = ">=3.10.6" },
-    { name = "pyqt5", specifier = ">=5.15.11" },
-    { name = "pyqt6", specifier = ">=6.9.0" },
-    { name = "pyright", specifier = ">=1.1.398" },
-    { name = "tabulate", specifier = ">=0.9.0" },
-    { name = "tqdm", specifier = ">=4.67.1" },
 ]
 
 [[package]]
@@ -504,7 +481,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "churten", editable = "../packages/churten" },
+    { name = "churten", git = "https://github.com/TanmayPani/churten?branch=main" },
     { name = "fastjet", specifier = ">=3.4.3.1" },
     { name = "hepstats", specifier = ">=0.9.2" },
     { name = "matplotlib", specifier = ">=3.10.1" },
