@@ -6,36 +6,53 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
   "fastjet>=3.4.3.1",
-  "hepstats>=0.9.2",
+  "torchdata",
+  "tensordict",
+  #"hepstats>=0.9.2",
   "matplotlib>=3.10.1",
-  "particle>=0.25.2",
+  #"particle>=0.25.2",
   "uproot>=5.6.0",
   "vector>=1.6.1",
   "numba>=0.61",
   "scipy>=1.15.2",
-  "churten",
   "pythia8mc>=8.315.0",
   "utils",
+  "churten",
+  "pyarrow>=22.0.0",
+  #"torchist>=1.0.1",
+  "pyyaml>=6.0.3",
 ]
 
 [dependency-groups]
 dev = [
   "PyQt6",
   "hist[fit,plot]>=2.8.1",
+  "ipykernel>=7.1.0",
   "mplhep>=0.3.59",
   "uproot-browser>=0.7.2",
 ]
 
-[tool.pyright]
-venvPath = "."
-venv = ".venv"
+#[tool.pyright]
+#venvPath = "."
+#venv = ".venv"
 
 [tool.uv]
 prerelease = "allow"
 
 [tool.uv.sources]
+#utils = {path = "utils"}
 utils = {workspace = true}
-churten = { git = "https://github.com/TanmayPani/churten", branch = "main"}
+torchdata = [
+  { index = "torchdata"},
+]
+churten = { path = "../packages/churten", editable = true }
 
 [tool.uv.workspace]
 members = ["utils"]
+
+[[tool.uv.index]]
+name = "torchdata"
+url = "https://download.pytorch.org/whl/nightly/cpu"
+explicit = true
+
+

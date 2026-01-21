@@ -11,10 +11,15 @@ wheels/
 
 #script outputs
 extra-*
-plot_output/
 outputs/
 logs/
 test/
-partitioned_datasets/
+
+#Misc non-script
+_*
+slides/
+datasets/
+
 # Virtual environments
 .venv
+uv.lock

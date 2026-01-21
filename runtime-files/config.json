@@ -1,0 +1,11 @@
+{
+    "num_replicas" : 20,
+    "num_data_subsample" : 500000,
+    "batch_size" : 5000,
+    "train_size" : 0.75,
+   "num_iterations" : 10,
+    "num_epochs" : 30,
+    "dataseed" : 0,
+    "modelseed" : 0,
+    "filename_stub_fmt" : "nreplicas{}_sub{}_batch_size{}_niter{}_nepochs{}_trainsplit{}_dataseed{}_modelseed{}"
+}

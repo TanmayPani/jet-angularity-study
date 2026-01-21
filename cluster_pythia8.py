@@ -11,8 +11,14 @@ import vector
 import fastjet as fj
 import pythia8mc as pythia
 
-from utils import clustering
 from utils.pdgid import charge
+
+from cluster_data import (
+    get_schema,
+    process_jets,
+    jets_to_rb_dict,
+    inclusive_jets_sorted_by_pt,
+)
 
 vector.register_awkward()
 
@@ -39,7 +45,7 @@ def select_particles_for_clustering(events, con_kt_min=0.2, con_abs_eta_max = 1.
     prt_sel_ = final_state_sel_ & prt_kt_sel_ & prt_eta_sel_
     events["prt"] = ak.drop_none(ak.mask(events.prt, prt_sel_), axis=1)
 
-    n_particles_sel_ = ak.num(events.prt, axis=1) > 0
+    n_particles_sel_ = ak.num(events.prt, axis=1) > 2
     #n_events_in_ = ak.num(events, axis=0)
     #print(f"{ak.sum(~n_particles_sel_)} rejected out of {n_events_in_} events")
     events = events[n_particles_sel_]
@@ -67,7 +73,7 @@ def make_cluster_sequence_input(events, make_highlevel=True, **kwargs):
 def setup_generator(seed = 0) -> pythia.Pythia:
     pythia_ = pythia.Pythia()
 
-    pythia_.readFile("runtime_files/pythia8_detroit_tune.txt")
+    pythia_.readFile("runtime-files/pythia8_detroit_tune.txt")
     pythia_.readString("Beams:idA = 2212")
     pythia_.readString("Beams:idB = 2212")
     pythia_.readString("Beams:eCM = 200.")
@@ -93,12 +99,14 @@ def generate(n_events, batch_size=-1, error_mode="none", seed=0):
         print(f"{i_batch} batches generated...")
         yield pythia_.nextBatch(batch_size, error_mode)
 
-def cluster_batch(events, jet_definition, con_kt_min=0.2, hc_kt_min=2.0, cs_pt_min=2.0, do_hc_mode=True):
+def cluster_batch(events, jet_definition, con_kt_min=0.2, cs_pt_min=2.0, do_hc_mode=True):
     events_ = make_cluster_sequence_input(events, con_kt_min=con_kt_min)
     cluster_seq_ = fj.ClusterSequence(events_, jet_definition)
-    jets_, constituents_ = clustering.inclusive_jets_sorted_by_pt(cluster_seq_, min_pt=cs_pt_min)
-    jets_, constituents_ = clustering.process_jets(
-        jets_, constituents_, jet_pt_min=10.0, do_hc_mode=do_hc_mode, hc_kt_min=hc_kt_min
+    jets_, constituents_ = inclusive_jets_sorted_by_pt(cluster_seq_, min_pt=cs_pt_min)
+    jets_, constituents_ = process_jets(
+        jets_, 
+        constituents_, 
+        jet_pt_min=10.0, 
     )
 
     try:
@@ -106,7 +114,7 @@ def cluster_batch(events, jet_definition, con_kt_min=0.2, hc_kt_min=2.0, cs_pt_m
     except ValueError:
         jets_["weight"] = ak.ones_like(jets_.px)
 
-    return clustering.jets_to_rb_dict(jets_, constituents_, do_hc_mode=do_hc_mode)
+    return jets_to_rb_dict(jets_, constituents_)
 
 def worker(n_events, batch_size, jet_definition, output_file, slot_id=None, seed=0, **kwargs):
     if slot_id is not None:
@@ -115,27 +123,24 @@ def worker(n_events, batch_size, jet_definition, output_file, slot_id=None, seed
         output_file = f"{output_file}.arrow"
 
     sink = pa.OSFile(output_file, "wb")
-    writer = pa.ipc.RecordBatchFileWriter
+    writer = pa.ipc.RecordBatchFileWriter(sink, get_schema())
 
     for batch in generate(n_events, batch_size=batch_size, seed=seed):
         pa_record_batch_ = cluster_batch(batch, jet_definition)
-        if isinstance(writer, type):
-            writer = writer(sink, pa_record_batch_.schema)
-
         writer.write(pa_record_batch_)
 
-    if isinstance(writer, pa.ipc.RecordBatchFileWriter):
-        writer.close()
-
+    writer.close()
+    get_schema.cache_clear()
 
 
 if __name__ == "__main__": 
-
     jet_def = fj.JetDefinition(fj.antikt_algorithm, 0.4, fj.BIpt2_scheme)
-
-    worker(1000000, 10000, jet_def, "outputs/pythia8")
-
-
+    worker(
+        10000000, 
+        100000, 
+        jet_def, 
+        "./datasets/STAR_pp200GeV_production_2012/Pythia8_pp200GeV",
+    )
 
     #print(select_particles_for_clustering(arr)[0:2].prt.fields)
     #print(select_particles_for_clustering(arr)[0:2].prt.p.fields)
