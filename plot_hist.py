@@ -25,11 +25,11 @@ var_axlabel = {
     "ch_ang_k2_b0"  :r"$\lambda^{\kappa = 2}_{\beta = 0}$ ($(p_T^D)^2$)"    ,
     "leading_constit_pt"   : r"$p_{\rm T, constit.}^{\rm leading} (GeV/$c$)$",
     "subleading_constit_pt " :r"$p_{\rm T, constit.}^{\rm sub-leading} (GeV/$c$)$",
-    "hc_pt"            :r"$p_{\rm T, jet}^{\rm h.c.} (GeV/$c$)$"                          ,
-    "hc_ch_ang_k1_b0.5":r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 0.5}$ (LHA, h.c.)"          ,
-    "hc_ch_ang_k1_b1"  :r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 1}$ (girth, h.c.)"          ,
-    "hc_ch_ang_k1_b2"  :r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 2}$ (thrust, h.c.)"         ,
-    "hc_ch_ang_k2_b0"  :r"$\lambda^{\kappa = 2, \rm h.c.}_{\beta = 0}$ ($(p_T^D)^2$, h.c.)"    ,
+    "sd_pt"            :r"$p_{\rm T, jet}^{\rm h.c.} (GeV/$c$)$"                          ,
+    "sd_ch_ang_k1_b0.5":r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 0.5}$ (LHA, h.c.)"          ,
+    "sd_ch_ang_k1_b1"  :r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 1}$ (girth, h.c.)"          ,
+    "sd_ch_ang_k1_b2"  :r"$\lambda^{\kappa = 1, \rm h.c.}_{\beta = 2}$ (thrust, h.c.)"         ,
+    "sd_ch_ang_k2_b0"  :r"$\lambda^{\kappa = 2, \rm h.c.}_{\beta = 0}$ ($(p_T^D)^2$, h.c.)"    ,
 }                      
 
 var_ax_ylabel = {
@@ -92,20 +92,18 @@ def main_closure_like(sys_var, load_prefix=None):
     num_cols =len(jpt_bin_labels) 
     fig_scale = 4
 
-    fig = defaultdict(dict)
     for var_name in jet_columns:
         load_dir = os.path.join(load_prefix, var_name)
         print("Plotting from", load_dir, "...")
         
-        for mod in ("h1_prof_incl_vs_hc", "h1_projY_ang", "h1_projY_hc_ang"):
+        for mod in ("h1_prof_incl_vs_hc", "h1_projY_ang", "h1_projY_sd_ang"):
             is_prof = "prof" in mod
             y_label = var_prof_ax_ylabel[var_name] if is_prof else var_ax_ylabel[var_name] 
-            fig[var_name][mod] = plt.figure(
+            fig = plt.figure(
                 figsize=(num_cols * fig_scale, fig_scale),
             )
-            #fig[var_name].suptitle("i vs hard-core")
                     
-            ax = fig[var_name][mod].subplots(
+            ax = fig.subplots(
                 2, num_cols, 
                 height_ratios=[3, 1],
                 sharey="row",
@@ -132,7 +130,7 @@ def main_closure_like(sys_var, load_prefix=None):
                     ax_arts.append((unf_plot, unf_errband))
                     ax_labels.append("unfolded (unf.)")
 
-                #print("--- h.c.", x[var_name].shape, h1_count_stacked[f"projY_hc_{var_name}"][ipt_bin].shape)
+                #print("--- h.c.", x[var_name].shape, h1_count_stacked[f"projY_sd_{var_name}"][ipt_bin].shape)
                 truth_plot = plot_mean_with_std_band(
                     ax[0, ipt_bin],
                     os.path.join(load_dir, "truth", f"{mod}_jpt{ipt_bin}.pt"),
@@ -157,6 +155,7 @@ def main_closure_like(sys_var, load_prefix=None):
             ax[1,0].set_ylabel("unf./truth", fontsize="x-large")
             ax[0,0].set_ylabel(y_label, fontsize="x-large")
             ax[0,num_cols-1].legend(ax_arts, ax_labels)
+            fig.savefig(f"outputs/histograms/plots/{var_name}/{mod}_jpt{ipt_bin}-closureQA.pdf")
             
 
 def main_nominal_like(sys_var, load_prefix=None):
@@ -196,7 +195,7 @@ def main_nominal_like(sys_var, load_prefix=None):
             
             _, _ = plot_mean_with_std_band(
                 ax, 
-                os.path.join(load_dir, f"h1_prof_incl_vs_hc_jpt{ipt_bin}.pt"),
+                os.path.join(load_dir, f"h1_prof_incl_vs_sd_jpt{ipt_bin}.pt"),
                 color = "magenta",
             )
             
@@ -212,7 +211,7 @@ def main_nominal_like(sys_var, load_prefix=None):
             ax.text(0.1, 0.8, jpt_bin_labels[ipt_bin], transform=ax.transAxes)
             # now plot both limits against eachother
             ax.set_xlabel(var_axlabel[var_name], fontsize="x-large")
-        axes[0].set_ylabel(var_axlabel[f"hc_{var_name}"], fontsize="x-large")
+        axes[0].set_ylabel(var_axlabel[f"sd_{var_name}"], fontsize="x-large")
         #prof_fig[var_name].savefig(f"slides/unfolded_hist/profile_niter{iteration}.pdf")
 
         fig[var_name] = plt.figure(
@@ -246,23 +245,23 @@ def main_nominal_like(sys_var, load_prefix=None):
                 ax_arts.append((incl_plot, incl_errband))
                 ax_labels.append("inclusive (incl.)")
 
-            #print("--- h.c.", x[var_name].shape, h1_count_stacked[f"projY_hc_{var_name}"][ipt_bin].shape)
-            hc_plot, hc_errband = plot_mean_with_std_band(
+            #print("--- h.c.", x[var_name].shape, h1_count_stacked[f"projY_sd_{var_name}"][ipt_bin].shape)
+            sd_plot, sd_errband = plot_mean_with_std_band(
                 ax[0, ipt_bin],
-                os.path.join(load_dir, f"h1_projY_hc_ang_jpt{ipt_bin}.pt"), 
+                os.path.join(load_dir, f"h1_projY_sd_ang_jpt{ipt_bin}.pt"), 
                 color="blue",
             )
             
             if ipt_bin == 0:
-                ax_arts.append((hc_plot, hc_errband))
-                ax_labels.append("hard-core (h.c.)")
+                ax_arts.append((sd_plot, sd_errband))
+                ax_labels.append("groomed")
 
             ax[0, ipt_bin].text(0.05, 0.3, jpt_bin_labels[ipt_bin], transform=ax[0, ipt_bin].transAxes)
             ax[0, ipt_bin].set_yscale("log")
 
             ratio_plot, ratio_errband = plot_mean_with_std_band(
                 ax[1, ipt_bin],
-                os.path.join(load_dir, f"h1_ratio_incl_vs_hc_jpt{ipt_bin}.pt"), 
+                os.path.join(load_dir, f"h1_ratio_incl_vs_sd_jpt{ipt_bin}.pt"), 
                 color="magenta",
             )
             ax[1, ipt_bin].axhline(y=1, linewidth=2, color="black", alpha=0.5)
@@ -271,7 +270,6 @@ def main_nominal_like(sys_var, load_prefix=None):
         ax[1,0].set_ylabel("h.c./incl.", fontsize="x-large")
         ax[0,0].set_ylabel(var_ax_ylabel[var_name], fontsize="x-large")
         ax[0,num_cols-1].legend(ax_arts, ax_labels)
-        #fig[var_name].savefig(f"slides/unfolded_hist/ratio_{var_name}_niter{iteration}.pdf")
 
 if __name__ == "__main__":
     sys_var = SysVar.UNFOLDING_PRIOR

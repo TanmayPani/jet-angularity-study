@@ -208,18 +208,20 @@ def plot_profile(
                 linestyle="dotted"
             ))
 
-            if ijpt != 3:
-                ax_arts.update(plot_profile_single(
-                    axs[ijpt], 
-                    "plot",
-                    path_prefix,
-                    htype="pythia8", 
-                    var_name=var_name,
-                    ijpt=ijpt,
-                    is_mc=True,
-                    mc_label = "PYTHIA-8",
-                    linestyle="dashdot"
-                ))
+            #if ijpt == 3:
+            #    continue
+
+            ax_arts.update(plot_profile_single(
+                axs[ijpt], 
+                "plot",
+                path_prefix,
+                htype="pythia8", 
+                var_name=var_name,
+                ijpt=ijpt,
+                is_mc=True,
+                mc_label = "PYTHIA-8",
+                linestyle="dashdot"
+            ))
         if ijpt == 0:
             ax_art_map.update(ax_arts)
         axs[ijpt].set_xlabel(var_xlabel[var_name], fontsize="x-large")
@@ -368,20 +370,21 @@ def plot_ratio(var_name, fig_scale=5, path_prefix="outputs/histograms", save_fig
                 linestyle="dotted"
             ))
             
-            if ijpt != 3:
-                ax_arts.update(
-                    plot_ratio_single(
-                        axs[0, ijpt], axs[1, ijpt],
-                        "plot",
-                        path_prefix,
-                        "pythia8",
-                        var_name,
-                        ijpt,
-                        is_mc=True,
-                        mc_label = "PYTHIA8",
-                        linestyle="dashdot"
-                    )
+            #if ijpt == 3:
+            #    continue
+            ax_arts.update(
+                plot_ratio_single(
+                    axs[0, ijpt], axs[1, ijpt],
+                    "plot",
+                    path_prefix,
+                    "pythia8",
+                    var_name,
+                    ijpt,
+                    is_mc=True,
+                    mc_label = "PYTHIA8",
+                    linestyle="dashdot"
                 )
+            )
 
             #if ijpt == 0:
             #    mc_ax_arts.update( ax_arts_mc)

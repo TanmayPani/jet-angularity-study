@@ -1,17 +1,12 @@
 import os
-from math import ceil
 from collections import defaultdict
-import json
-import pickle
 
 import numpy as np
 import matplotlib.pyplot as plt 
-
 import pyarrow as pa
 
 import torch
 
-from process_arrow import add_extra_columns
 from utils.histogram import TorchHist1D, TorchHist2D
 
 var_xlabel = {
@@ -42,17 +37,6 @@ if __name__ == "__main__":
     tables["reco_matched"] = pa.ipc.open_file(buffers["reco_matched"]).read_all()
 
 
-    with open('outputs/omnisequential_1/omniseq-bins10.pkl', 'rb') as file:
-        _bins = pickle.load(file)
-    bins = {} 
-    x = {}
-    x_err = {}
-    #hc_jet_columns = [f"hc_{col}" for col in jet_columns]
-    for var_name, binning in _bins.items():
-        bins[var_name] = torch.as_tensor(binning)
-        x[var_name] = 0.5*(bins[var_name][1:]+bins[var_name][:-1])
-        x_err[var_name] = 0.5*(bins[var_name][1:]-bins[var_name][:-1])
- 
     weights = {}
     weights_sq = {}
 

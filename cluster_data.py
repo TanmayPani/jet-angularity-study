@@ -64,6 +64,7 @@ def jets_to_rb_dict(
         )
     for col_name, col_field in constit_col_fields.items():
         arr = getattr(constituents, col_name)
+        #print("constit", col_name, col_field, arr)
         rec_batch_dict[col_field.name] = pa.array(
             ak.flatten(arr, axis=1), 
             col_field.type,
@@ -98,6 +99,7 @@ def process_jets(
     jetCut = jetPtCut & jetEtaCut & jetNChargedCut
     jets = ak.drop_none(ak.mask(jets, jetCut), axis=1)
     constituents = ak.drop_none(ak.mask(constituents, jetCut), axis=1)
+    
     print(f"------After cuts, {ak.count(jets.pt)} jets left...")
 
     return jets, constituents
@@ -177,6 +179,7 @@ def cluster_batch(
 
     clusterSeq = fj.ClusterSequence(candidates, jet_definition)
     jets, constituents = inclusive_jets_sorted_by_pt(clusterSeq, min_pt=cs_pt_min)
+
     jets, constituents = process_jets(
         jets, 
         constituents, 
