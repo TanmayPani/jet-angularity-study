@@ -63,7 +63,6 @@ if __name__ == "__main__":
 
     py8_dir = "./datasets/STAR_pp200GeV_production_2012"
     py8_file = "Pythia8_pp200GeV.arrow"
-    # py8_path = os.path.join(py8_dir, f"preproc_{py8_file}")
     py8_path = os.path.join(py8_dir, f"preproc_{py8_file}")
 
     preprocess_data(py8_dir, py8_file)

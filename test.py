@@ -1,90 +1,81 @@
 import marimo
 
-__generated_with = "0.19.9"
+__generated_with = "0.19.11"
 app = marimo.App(width="columns")
 
 with app.setup:
-    import os
-    import json
-
-    import pyarrow as pa
-    import torch
-
-    import matplotlib.pyplot as plt
-
-    from systematics import SysVar, get_jet_pt_bins
-    from utils.accumulator import Accumulator
-
-    jet_columns = (
-        "ch_ang_k1_b0.5",
-        "ch_ang_k1_b1",
-        "ch_ang_k1_b2",
-        "ch_ang_k2_b0",
-    )
+    import awkward as ak
+    import pythia8mc as pythia
 
 
 @app.function
-def main(table, prefix, binning_json_file):
-    jpt_bins = get_jet_pt_bins(SysVar.NONE)
-    weights = torch.as_tensor(table["weight"].to_numpy(), dtype=torch.float32)
+def setup():
+    _pythia = pythia.Pythia()
 
-    with open(binning_json_file, "rb") as file:
-        bins = json.load(file)
-    hvars = ("pt", "ch_ang_k1_b1", "sd_ch_ang_k1_b1")
-    data = torch.stack(
-        [torch.as_tensor(table[var].to_numpy(), dtype=torch.float32) for var in hvars],
-        dim=0,
+    _pythia.readString("Print:quiet = on")
+    _pythia.readString("Beams:idA = 2212")
+    _pythia.readString("Beams:idB = 2212")
+    _pythia.readString("Beams:eCM = 200.")
+    _pythia.readString("HardQCD:all = on")
+
+    _pythia.readString("PhaseSpace:pTHatMin = 11.0")
+    _pythia.readString("PhaseSpace:pTHatMax = -1")
+
+    _pythia.readString("PhaseSpace:bias2Selection = on")
+    _pythia.readString("PhaseSpace:bias2SelectionPow = 4")
+    _pythia.readString("PhaseSpace:bias2SelectionRef = 11.")
+
+    # Turn on some kinematic weighting.
+    _pythia.readString(
+        "VariationFrag:List = {kineVar0 frag:aLund=0.6"
+        + " frag:bLund=0.9 frag:rFactC=1.2"
+        + " frag:rFactB=1.0 frag:ptSigma=0.4}"
     )
+    _pythia.readString(
+        "VariationFrag:List += {kineVar1 frag:aLund=0.6"
+        + " frag:bLund=0.9 frag:rFactC=1.2"
+        + " frag:rFactB=1.0 frag:ptSigma=0.3}"
+    )
+    _pythia.init()
+    return _pythia
 
-    hbins = (jpt_bins, bins["ch_ang_k1_b1"], bins["ch_ang_k1_b1"])
-    hist = Accumulator.create(*hbins)
-    hist.fill(data, weights=weights)
-    return hist.histogram(), hist.profile(2)
+
+@app.function
+def generate(pythia_gen, n_events, batch_size=-1, error_mode="none"):
+    batch_size = n_events if batch_size < 0 else batch_size
+    n_events_to_generate = n_events
+    i_batch = 0
+    while n_events_to_generate > 0:
+        batch_size = (
+            n_events_to_generate if batch_size > n_events_to_generate else batch_size
+        )
+        n_events_to_generate -= batch_size
+        i_batch += 1
+        print(f"{i_batch} batches generated...")
+        yield pythia_gen.nextBatch(batch_size, error_mode), pythia_gen.infoPython()
 
 
 @app.cell
 def _():
-    input_root_dir = os.path.join(
-        "./datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding",
-        str(SysVar.NONE),
-    )
-    binning_json_file = "./runtime-files/bins_p00.02_N100000.json"
+    _pythia = setup()
+    _pythia_batch_gen = generate(_pythia, 100)
+    _pythia_batch, _pythia_info = next(_pythia_batch_gen)
+    for _field in _pythia_batch.info.fields:
+        if _field == "weights":
+            _awk_batch_info = (
+                _pythia_batch.info[_field][-1][0]
+                if len(_pythia_batch.info[_field][-1]) > 0
+                else 0.0
+            )
+            _pythia_info_last = getattr(_pythia_info, "weight")()
+        else:
+            _awk_batch_info = _pythia_batch.info[_field][-1]
+            _pythia_info_last = getattr(_pythia_info, _field)()
 
-    py6_buffers = []
-    py6_buffers.append(pa.memory_map(os.path.join(input_root_dir, "gen-matches.arrow")))
-    py6_match_table = pa.ipc.open_file(py6_buffers[-1]).read_all()
-    py6_buffers.append(pa.memory_map(os.path.join(input_root_dir, "misses.arrow")))
-    py6_misses_table = pa.ipc.open_file(py6_buffers[-1]).read_all()
-    py6_table = pa.concat_tables((py6_match_table, py6_misses_table))
+        print(_field, _awk_batch_info, _pythia_info_last)
+        assert _awk_batch_info == _pythia_info_last, f"{_field} failed!"
+        print(_field, "passed...")
 
-    hist, profile = main(py6_table, "pythia6", binning_json_file)
-
-    hist_2d = hist.project(0, 1)
-    hist_2d_sd = hist.project(0, 2)
-    fig, axs = plt.subplots(1, 4, figsize=(20, 5), sharey="row")
-    pfig, paxs = plt.subplots(1, 4, figsize=(20, 5), sharey="row")
-    jpt_bins = (10, 15, 20, 40, 80)
-
-    for iax, (ax, pax) in enumerate(zip(axs, paxs)):
-        ax.errorbar(
-            hist_2d.axes[1].bin_centers[1:-1],
-            hist_2d[iax + 1].values[1:-1],
-            label="incl",
-        )
-        ax.errorbar(
-            hist_2d_sd.axes[1].bin_centers[1:-1],
-            hist_2d_sd[iax + 1].values[1:-1],
-            label="sd",
-        )
-        pax.errorbar(
-            profile.axes[1].bin_centers[1:-1],
-            profile[iax + 1].values[1:-1],
-        )
-        ax.set_title(f"{jpt_bins[iax]}-{jpt_bins[iax + 1]}")
-        # ax.set_aspect("equal")
-    ax.legend()
-    # mo.mpl.interactive(fig)
-    plt.show()
     return
 
 
