@@ -2,12 +2,11 @@ import os
 import sys
 from datetime import datetime
 from concurrent.futures import (
-    ProcessPoolExecutor, 
-    wait, 
+    ProcessPoolExecutor,
     as_completed,
 )
 import logging
-from typing import Optional, Tuple
+from typing import Optional
 
 import numba as nb
 
@@ -27,9 +26,9 @@ from cluster_data import (
 )
 from systematics import SysVar
 
-bad_run_list : str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
-data_folder_path : str = "/run/media/tanmaypani/Samsung-1tb/data/Pythia6Embedding_pp200_production_2012_P12id_SL12d_20235003_MuToTree20250123"
-output_path_prefix : str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
+bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
+data_folder_path: str = "/run/media/tanmaypani/Samsung-1tb/data/Pythia6Embedding_pp200_production_2012_P12id_SL12d_20235003_MuToTree20250123"
+output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
 
 pt_hat_bins = ["11", "15", "20", "25", "35", "45", "55", "infty"]
 pt_hat_low_edges = [11, 15, 20, 25, 35, 45, 55]
@@ -76,7 +75,9 @@ class StreamToLogger(object):
         for line in buf.rstrip().splitlines():
             self.logger.log(self.log_level, line.rstrip())
 
+
 vector.register_awkward()
+
 
 @nb.jit
 def match_gen_to_reco(builder, gen_jet_events, reco_jet_events, max_dr=0.4):
@@ -114,30 +115,33 @@ def match_gen_to_reco(builder, gen_jet_events, reco_jet_events, max_dr=0.4):
         builder.end_list()
     return builder
 
+
 def process_particle_lvl(
-    events : ak.Array,
-    jet_definition : fj.JetDefinition,
-    cs_min_pt : float = 2.0,
-    max_jet_pt : float = 1000.0,
+    events: ak.Array,
+    jet_definition: fj.JetDefinition,
+    cs_min_pt: float = 2.0,
+    max_jet_pt: float = 1000.0,
     batch_weight: float = 1.0,
 ):
     genCandidates = ak.zip(
         dict(
             zip(
                 ("pt", "eta", "phi", "e", "charge"),
-                [events[f"genTracks._{branch}"] 
-                for branch in ("Pt", "Eta", "Phi", "E", "Charge")],
+                [
+                    events[f"genTracks._{branch}"]
+                    for branch in ("Pt", "Eta", "Phi", "E", "Charge")
+                ],
             )
         ),
         with_name="Momentum4D",
     )
 
     isVzGood = abs(events._pVtx_Z) < 30.0
-    isMaxKtOk = ak.max(genCandidates.pt, axis=1) < 30.0 
+    isMaxKtOk = ak.max(genCandidates.pt, axis=1) < 30.0
 
     genEventFilter = isMaxKtOk & isVzGood
     events = ak.drop_none(ak.mask(events, genEventFilter))
-    
+
     genCandidates = ak.drop_none(
         ak.mask(
             genCandidates,
@@ -153,7 +157,7 @@ def process_particle_lvl(
 
     genJetPtMaxCut = ak.max(genJets.pt, axis=1) < max_jet_pt
     events = ak.drop_none(ak.mask(events, genJetPtMaxCut))
-    
+
     genJets = ak.drop_none(ak.mask(genJets, genJetPtMaxCut))
     genConstituents = ak.drop_none(ak.mask(genConstituents, genJetPtMaxCut))
     genJets, genConstituents = process_jets(
@@ -162,7 +166,8 @@ def process_particle_lvl(
         jet_pt_min=5.0,
     )
     genJets["weight"], _ = ak.broadcast_arrays(batch_weight, genJets.pt)
-    return genJets, genConstituents, events 
+    return genJets, genConstituents, events
+
 
 def cluster_batch(
     events: ak.Array,
@@ -173,29 +178,33 @@ def cluster_batch(
     batch_weight: float = 1.0,
     con_kt_min: Optional[float] = None,
     sys_var_type: SysVar = SysVar.NONE,
-    iseed : Optional[int] = None,
-) -> tuple[(pa.RecordBatch, pa.RecordBatch, pa.RecordBatch, pa.RecordBatch)] | pa.RecordBatch:
+    iseed: Optional[int] = None,
+) -> (
+    tuple[(pa.RecordBatch, pa.RecordBatch, pa.RecordBatch, pa.RecordBatch)]
+    | pa.RecordBatch
+):
     print(f"---Got {len(events)} events")
-    genJets, genConstituents, events =  process_particle_lvl(
+    genJets, genConstituents, events = process_particle_lvl(
         events,
         jet_definition,
         min_pt,
         max_jet_pt,
         batch_weight,
     )
-    print(f"---{len(events)} events left after event cuts and pt_jet < {max_jet_pt} GeV/c cut at gen level...")
+    print(
+        f"---{len(events)} events left after event cuts and pt_jet < {max_jet_pt} GeV/c cut at gen level..."
+    )
 
     if not is_good_run:
         miss_record_batch = jets_to_rb_dict(
-            genJets, 
-            genConstituents, 
+            genJets,
+            genConstituents,
         )
         print(f"---Bad run, added {len(miss_record_batch)} gen-jets to missed jets...")
         return miss_record_batch
 
-
     recoCandidates, recoEventFilter = process_events(
-        events, 
+        events,
         is_embedding=True,
         sys_var=sys_var_type,
         iseed=iseed,
@@ -218,18 +227,14 @@ def cluster_batch(
     recoJets = ak.drop_none(ak.mask(recoJets, recoEventFilter))
     recoConstituents = ak.drop_none(ak.mask(recoConstituents, recoEventFilter))
     recoJets["weight"], _ = ak.broadcast_arrays(batch_weight, recoJets.pt)
-    print(
-        f"---Reco lvl cut took nevents from {len(recoCandidates)} to {len(recoJets)}"
-    )
+    print(f"---Reco lvl cut took nevents from {len(recoCandidates)} to {len(recoJets)}")
 
     missedGenJets = ak.drop_none(ak.mask(genJets, ~recoEventFilter))
     missedGenConstituents = ak.drop_none(ak.mask(genConstituents, ~recoEventFilter))
     genJets = ak.drop_none(ak.mask(genJets, recoEventFilter))
     genConstituents = ak.drop_none(ak.mask(genConstituents, recoEventFilter))
 
-    matchIndices = match_gen_to_reco(
-        ak.ArrayBuilder(), genJets, recoJets
-    ).snapshot()
+    matchIndices = match_gen_to_reco(ak.ArrayBuilder(), genJets, recoJets).snapshot()
 
     genMissSelection = ak.is_none(matchIndices.reco, axis=1)
     missIndices = ak.drop_none(ak.mask(matchIndices, genMissSelection)).gen
@@ -251,31 +256,31 @@ def cluster_batch(
     recoMatchConstituents = recoConstituents[goodMatchIndices.reco]
 
     gen_match_record_batch = jets_to_rb_dict(
-        genMatches, 
-        genMatchConstituents, 
+        genMatches,
+        genMatchConstituents,
     )
 
     reco_match_record_batch = jets_to_rb_dict(
-        recoMatches, 
-        recoMatchConstituents, 
+        recoMatches,
+        recoMatchConstituents,
     )
 
     fake_record_batch = jets_to_rb_dict(
-        recoFakes, 
-        recoFakeConstituents, 
+        recoFakes,
+        recoFakeConstituents,
     )
 
     miss_record_batch = jets_to_rb_dict(
-        genMisses, 
-        genMissConstituents, 
+        genMisses,
+        genMissConstituents,
     )
 
     print(
         "---Number of gen-matches, reco-matches, misses, fakes:",
-        len(gen_match_record_batch), 
-        len(reco_match_record_batch), 
-        len(miss_record_batch), 
-        len(fake_record_batch)
+        len(gen_match_record_batch),
+        len(reco_match_record_batch),
+        len(miss_record_batch),
+        len(fake_record_batch),
     )
 
     return (
@@ -295,19 +300,16 @@ def worker(
     max_jet_pt=1000.0,
     con_kt_min=None,
     do_test=False,
-    sys_var_type = SysVar.NONE
+    sys_var_type=SysVar.NONE,
 ):
     if not do_test:
         sys.stdout = StreamToLogger(
-            logging.getLogger("STDOUT"), 
-            f"logs/{slotId}.log", 
-            logging.DEBUG, 
-            mode="w"
+            logging.getLogger("STDOUT"), f"logs/{slotId}.log", logging.DEBUG, mode="w"
         )
 
         sys.stderr = StreamToLogger(
-            logging.getLogger("STDERR"), 
-            f"logs/{slotId}.log", 
+            logging.getLogger("STDERR"),
+            f"logs/{slotId}.log",
             logging.ERROR,
             mode="w",
         )
@@ -332,7 +334,7 @@ def worker(
     recoMatchSink = pa.OSFile(f"{output_dir}/reco-matches.arrow", "wb")
     missSink = pa.OSFile(f"{output_dir}/misses.arrow", "wb")
     fakeSink = pa.OSFile(f"{output_dir}/fakes.arrow", "wb")
-   
+
     genMatchWriter = pa.ipc.new_file(genMatchSink, get_schema())
     recoMatchWriter = pa.ipc.new_file(recoMatchSink, get_schema())
     missWriter = pa.ipc.new_file(missSink, get_schema())
@@ -342,7 +344,7 @@ def worker(
     print(f"Writing matched jets at reco level to: {output_dir}/reco-matches.arrow")
     print(f"Writing missed jets at gen level to: {output_dir}/misses.arrow")
     print(f"Writing fake jets at reco level to: {output_dir}/fakes.arrow")
- 
+
     iBatch = 0
     for startFile in range(0, len(goodRunFiles), nFilesPerBatch):
         iBatch += 1
@@ -391,7 +393,7 @@ def worker(
             f"Processing batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
         )
 
-        miss_record_batch= cluster_batch(
+        miss_record_batch = cluster_batch(
             events,
             jetDefinition,
             is_good_run=False,
@@ -403,7 +405,7 @@ def worker(
         missWriter.write(miss_record_batch)
         if iBatch == 2 * maxNBatches:
             break
-    
+
     genMatchWriter.close()
     recoMatchWriter.close()
     missWriter.close()
@@ -418,17 +420,17 @@ def worker(
 
 if __name__ == "__main__":
     do_test = False
-    
-    #sys_var_type = SysVar.NONE
-    #sys_var_type = SysVar.TOWER_ET_CORRECTION
+
+    # sys_var_type = SysVar.NONE
+    # sys_var_type = SysVar.TOWER_ET_CORRECTION
     sys_var_type = SysVar.TRACK_EFFICIENCY
 
     ptHatBinsToRun = [6] if do_test else list(range(0, 7))
-    #ptHatBinsToRun = [6]
-    output_prefix=os.path.join(
-        output_path_prefix, 
+    # ptHatBinsToRun = [6]
+    output_prefix = os.path.join(
+        output_path_prefix,
         "test" if do_test else str(sys_var_type),
-    ) 
+    )
     with ProcessPoolExecutor() as executor:
         futures = []
         for ipth in ptHatBinsToRun:
@@ -452,7 +454,7 @@ if __name__ == "__main__":
                     sys_var_type=sys_var_type,
                 )
             )
-        #wait(futures)
+        # wait(futures)
         for future in as_completed(futures):
             print("Finished slot for:", future.result())
     print("Done!")

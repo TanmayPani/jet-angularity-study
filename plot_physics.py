@@ -4,8 +4,7 @@ __generated_with = "0.20.4"
 app = marimo.App(width="medium")
 
 with app.setup:
-    import os
-    from collections import defaultdict
+    from pathlib import Path
 
     import numpy as np
     import matplotlib.pyplot as plt
@@ -60,7 +59,7 @@ with app.setup:
         "ch_ang_k2_b0": r"$\langle\lambda^{\kappa = 2}_{\beta = 0}\rangle$",
     }
 
-    prefix = "outputs/histograms"
+    prefix_dir = Path("./outputs/histograms")
 
     mc_labels = ("pythia6", "pythia8", "herwig7")
     mc_hist_styles = {
@@ -87,9 +86,7 @@ def plot_data_points(ax, plot_type, hdict, **kwargs):
             nan=0, posinf=0, neginf=0
         )
 
-    if plot_type in {
-        "errorbar",
-    }:
+    if plot_type == "errorbar":
         kwargs["xerr"] = hdict["half_bin_width"]
         kwargs["yerr"] = (hdict.get("bin_count_std", hdict["bin_count_err"]),)
 
@@ -158,22 +155,13 @@ def plot_hist(
 def plot_profile_single(
     ax,
     plot_type,
-    htype,
-    var_name,
-    x_var_name,
-    fname_prefix,
-    ijpt,
-    is_mc=False,
+    file_path,
+    sys_err_path=None,
     label="MC",
     **kwargs,
 ):
-    hdict = torch.load(
-        os.path.join(
-            prefix, htype, var_name, f"{fname_prefix}_vs_{x_var_name}_jpt{ijpt}.pt"
-        ),
-        mmap=True,
-    )
-    if not is_mc:
+    hdict = torch.load(file_path, mmap=True)
+    if sys_err_path is not None:
         points_label: str = rf"$\langle\lambda^{label}\rangle\pm\delta_{{sys.}}(\langle \lambda^{label} \rangle)$"
         points_kwargs = dict(
             linestyle="none",
@@ -181,15 +169,7 @@ def plot_profile_single(
             markersize=10,
             markeredgecolor="white",
         )
-        sys_err_dict = torch.load(
-            os.path.join(
-                prefix,
-                "sys_errors",
-                var_name,
-                f"{fname_prefix}_vs_{x_var_name}_jpt{ijpt}.pt",
-            ),
-            mmap=True,
-        )
+        sys_err_dict = torch.load(sys_err_path, mmap=True)
         errbar_kwargs = dict(fill=True, alpha=0.5)
     else:
         points_label: str = rf"$\langle\lambda^{label}\rangle$"
@@ -207,19 +187,6 @@ def plot_profile_single(
         errbar_kwargs=errbar_kwargs,
         **kwargs,
     )
-
-    # if not is_mc:
-    #     artists[r"$\pm \sigma(\lambda^{SD}) (std. dev.)$"] = plot_error_bars(
-    #         ax,
-    #         hdict,
-    #         hdict["bin_count_err"],
-    #         fill=True,
-    #         hatch="+++++++",
-    #         alpha=0.3,
-    #         edgecolor=kwargs.get("color", None),
-    #         facecolor="none",
-    #     )
-
     return artists
 
 
@@ -241,21 +208,23 @@ def plot_profile(
     )
 
     ax_art_map = {}
-    ax_texts = defaultdict(list)
+    # ax_texts = defaultdict(list)
     ijpt = -1
     for ijpt_true in range(len(jpt_bins) - 1):
         if ijpt_true in jpt_bins_to_omit:
             continue
         ijpt += 1
-
         ax_arts = plot_profile_single(
             axs[ijpt],
             "errorbar",
-            str(SysVar.NONE),
-            var_name,
-            x_var_name,
-            "prof_sd",
-            ijpt_true,
+            file_path=prefix_dir
+            / str(SysVar.NONE)
+            / var_name
+            / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
+            sys_err_path=prefix_dir
+            / "sys_errors"
+            / var_name
+            / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
             color="blue",
             label="{SD}",
         )
@@ -264,11 +233,14 @@ def plot_profile(
                 plot_profile_single(
                     axs[ijpt],
                     "errorbar",
-                    str(SysVar.NONE),
-                    var_name,
-                    x_var_name,
-                    "prof_incl",
-                    ijpt_true,
+                    file_path=prefix_dir
+                    / str(SysVar.NONE)
+                    / var_name
+                    / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
+                    sys_err_path=prefix_dir
+                    / "sys_errors"
+                    / var_name
+                    / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
                     color="red",
                     label="{incl.}",
                 )
@@ -280,12 +252,10 @@ def plot_profile(
                     plot_profile_single(
                         axs[ijpt],
                         "plot",
-                        mc,
-                        var_name,
-                        x_var_name,
-                        "prof_sd",
-                        ijpt_true,
-                        is_mc=True,
+                        file_path=prefix_dir
+                        / mc
+                        / var_name
+                        / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
                         label="".join(("{", mc, "}")),
                         color="blue",
                         **(mc_hist_styles[mc]),
@@ -296,12 +266,10 @@ def plot_profile(
                     plot_profile_single(
                         axs[ijpt],
                         "plot",
-                        mc,
-                        var_name,
-                        x_var_name,
-                        "prof_incl",
-                        ijpt_true,
-                        is_mc=True,
+                        file_path=prefix_dir
+                        / mc
+                        / var_name
+                        / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
                         color="red",
                         **(mc_hist_styles[mc]),
                     )
@@ -347,156 +315,55 @@ def plot_profile(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = os.path.join(prefix, "plots", var_name)
-        os.makedirs(fig_save_dir, exist_ok=True)
-        fig_save_path = os.path.join(fig_save_dir, f"prof_ang_vs_{x_var_name}.pdf")
+        fig_save_dir = prefix_dir / "plots" / var_name
+        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_path = fig_save_dir / f"prof_ang_vs_{x_var_name}.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
-
-
-@app.function
-def plot_ratio_single(
-    ax0,
-    ax1,
-    plot_type,
-    htype,
-    var_name,
-    ijpt,
-    is_mc=False,
-    mc_label="MC",
-    **kwargs,
-):
-    hist_root_dir = os.path.join(prefix, htype, var_name)
-    sys_err_root_dir = os.path.join(prefix, "sys_errors", var_name)
-    if not is_mc:
-        points_kwargs = dict(linestyle="none", markeredgecolor="white")
-        errbar_kwargs = dict(fill=True, alpha=0.5)
-    else:
-        points_kwargs = dict(linewidth=2)
-        errbar_kwargs = None
-
-    incl_hdict = torch.load(
-        os.path.join(hist_root_dir, f"hist_ang_jpt{ijpt}.pt"), mmap=True
-    )
-    incl_sys_err_hdict = (
-        None
-        if is_mc
-        else torch.load(
-            os.path.join(sys_err_root_dir, f"hist_ang_jpt{ijpt}.pt"), mmap=True
-        )
-    )
-    if not is_mc:
-        points_kwargs.update(marker="o", markersize=5)
-    incl_ax_arts = plot_hist(
-        ax0,
-        plot_type,
-        incl_hdict,
-        incl_sys_err_hdict,
-        points_kwargs=points_kwargs,
-        errbar_kwargs=errbar_kwargs,
-        color="red",
-        **kwargs,
-    )
-
-    sd_hdict = torch.load(
-        os.path.join(hist_root_dir, f"hist_sd_ang_jpt{ijpt}.pt"), mmap=True
-    )
-    sd_sys_err_hdict = (
-        None
-        if is_mc
-        else torch.load(
-            os.path.join(sys_err_root_dir, f"hist_sd_ang_jpt{ijpt}.pt"), mmap=True
-        )
-    )
-    if not is_mc:
-        points_kwargs.update(marker="^", markersize=5)
-    sd_ax_arts = plot_hist(
-        ax0,
-        plot_type,
-        sd_hdict,
-        sd_sys_err_hdict,
-        points_kwargs=points_kwargs,
-        errbar_kwargs=errbar_kwargs,
-        color="blue",
-        **kwargs,
-    )
-
-    ratio_hdict = torch.load(
-        os.path.join(hist_root_dir, f"ratio_incl_vs_sd_jpt{ijpt}.pt"), mmap=True
-    )
-    ratio_sys_err_hdict = (
-        None
-        if is_mc
-        else torch.load(
-            os.path.join(sys_err_root_dir, f"ratio_incl_vs_sd_jpt{ijpt}.pt"),
-            mmap=True,
-        )
-    )
-    if not is_mc:
-        points_kwargs.update(marker="*", markersize=10)
-    ratio_ax_arts = plot_hist(
-        ax1,
-        plot_type,
-        ratio_hdict,
-        ratio_sys_err_hdict,
-        points_kwargs=points_kwargs,
-        errbar_kwargs=errbar_kwargs,
-        color="magenta" if not is_mc else "black",
-        **kwargs,
-    )
-
-    if not is_mc:
-        return {
-            r"$incl. \pm \delta_{sys}$": incl_ax_arts,
-            r"$groomed \pm \delta_{sys}$": sd_ax_arts,
-            r"$\frac{groomed}{incl.}\pm \delta_{sys}$": ratio_ax_arts,
-        }
-    else:
-        return {mc_label: ratio_ax_arts}
 
 
 @app.function
 def plot_hist_single(
     ax,
     plot_type,
-    htype,
-    var_name,
-    ijpt=None,
-    is_mc=False,
+    file_path,
+    sys_err_path=None,
     label="hist",
     **kwargs,
 ):
-    hist_root_dir = os.path.join(prefix, htype, var_name)
-    sys_err_root_dir = os.path.join(prefix, "sys_errors", var_name)
-    if not is_mc:
-        points_kwargs = dict(linestyle="none", markeredgecolor="white")
+
+    hdict = torch.load(file_path, mmap=True)
+    marker = kwargs.pop("marker", "o")
+    markersize = kwargs.pop("markersize", 5)
+    markeredgecolor = kwargs.pop("markeredgecolor", "white")
+    if sys_err_path is not None:
+        sys_err_hdict = torch.load(sys_err_path, mmap=True)
+        points_kwargs = dict(
+            linestyle="none",
+            marker=marker,
+            markersize=markersize,
+            markeredgecolor=markeredgecolor,
+        )
         errbar_kwargs = dict(fill=True, alpha=0.5)
     else:
         points_kwargs = dict(linewidth=2)
         errbar_kwargs = None
+        sys_err_hdict = None
 
-    fname = f"hist_jpt{ijpt}.pt" if ijpt is not None else "hist.pt"
-    incl_hdict = torch.load(
-        os.path.join(hist_root_dir, fname),
-        mmap=True,
-    )
-    incl_sys_err_hdict = (
-        None if is_mc else torch.load(os.path.join(sys_err_root_dir, fname), mmap=True)
-    )
-    if not is_mc:
-        points_kwargs.update(marker="o", markersize=5)
     ax_arts = plot_hist(
         ax,
         plot_type,
-        incl_hdict,
-        incl_sys_err_hdict,
+        hdict,
+        sys_err_hdict,
         points_kwargs=points_kwargs,
         errbar_kwargs=errbar_kwargs,
         **kwargs,
     )
 
     return {
-        rf"${label} \pm \delta_{{sys}}$" if not is_mc else label: ax_arts,
+        rf"${label} \pm \delta_{{sys}}$"
+        if sys_err_hdict is not None
+        else label: ax_arts,
     }
 
 
@@ -524,8 +391,6 @@ def plot_hists(
     )
 
     hist_ax_arts = {}
-    # ax_texts = defaultdict(list)
-
     ijpt = -1
     for ijpt_true in range(len(jpt_bins) - 1):
         if ijpt_true in jpt_bins_to_omit:
@@ -536,9 +401,14 @@ def plot_hists(
         ax_arts = plot_hist_single(
             axs[ijpt],
             "errorbar",
-            str(SysVar.NONE),
-            var_name,
-            ijpt,
+            file_path=prefix_dir
+            / str(SysVar.NONE)
+            / var_name
+            / f"hist_jpt{ijpt_true}.pt",
+            sys_err_path=prefix_dir
+            / "sys_errors"
+            / var_name
+            / f"hist_jpt{ijpt_true}.pt",
             label="inclusive",
             color="red",
         )
@@ -549,10 +419,10 @@ def plot_hists(
                     plot_hist_single(
                         axs[ijpt],
                         "plot",
-                        mc,
-                        var_name,
-                        ijpt_true,
-                        is_mc=True,
+                        file_path=prefix_dir
+                        / mc
+                        / var_name
+                        / f"hist_jpt{ijpt_true}.pt",
                         label=mc,
                         color="red",
                         **(mc_hist_styles[mc]),
@@ -564,9 +434,14 @@ def plot_hists(
                 plot_hist_single(
                     axs[ijpt],
                     "errorbar",
-                    str(SysVar.NONE),
-                    f"sd_{var_name}",
-                    ijpt_true,
+                    file_path=prefix_dir
+                    / str(SysVar.NONE)
+                    / f"sd_{var_name}"
+                    / f"hist_jpt{ijpt_true}.pt",
+                    sys_err_path=prefix_dir
+                    / "sys_errors"
+                    / f"sd_{var_name}"
+                    / f"hist_jpt{ijpt_true}.pt",
                     label="groomed",
                     color="blue",
                 )
@@ -578,10 +453,10 @@ def plot_hists(
                         plot_hist_single(
                             axs[ijpt],
                             "plot",
-                            mc,
-                            f"sd_{var_name}",
-                            ijpt_true,
-                            is_mc=True,
+                            file_path=prefix_dir
+                            / mc
+                            / f"sd_{var_name}"
+                            / f"hist_jpt{ijpt_true}.pt",
                             label=mc,
                             color="blue",
                             **(mc_hist_styles[mc]),
@@ -615,11 +490,66 @@ def plot_hists(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = os.path.join(prefix, "plots", var_name)
-        os.makedirs(fig_save_dir, exist_ok=True)
-        fig_save_path = os.path.join(fig_save_dir, f"hist_{var_name}.pdf")
+        fig_save_dir = prefix_dir / "plots" / var_name
+        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_path = fig_save_dir / f"hist_{var_name}.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
+
+
+@app.function
+def plot_ratio_single(
+    axs,
+    plot_type,
+    num_file_paths,
+    den_file_paths,
+    ratio_file_paths,
+    num_label="hist num.",
+    den_label="hist den.",
+    ratio_label="num./den.",
+    **kwargs,
+):
+    ax_arts = {}
+    ax_arts.update(
+        plot_hist_single(
+            axs[0],
+            plot_type,
+            file_path=num_file_paths[0],
+            sys_err_path=num_file_paths[1],
+            color="red",
+            label=num_label,
+            **kwargs,
+        )
+    )
+
+    ax_arts.update(
+        plot_hist_single(
+            axs[0],
+            plot_type,
+            file_path=den_file_paths[0],
+            sys_err_path=den_file_paths[1],
+            color="blue",
+            marker="^",
+            label=den_label,
+            **kwargs,
+        )
+    )
+
+    ax_arts.update(
+        plot_hist_single(
+            axs[1],
+            plot_type,
+            file_path=ratio_file_paths[0],
+            sys_err_path=ratio_file_paths[1],
+            marker="*",
+            markersize=10,
+            color="magenta" if plot_type == "errorbar" else "black",
+            label=ratio_label,
+            **kwargs,
+        )
+    )
+
+    return ax_arts
 
 
 @app.function
@@ -657,27 +587,59 @@ def plot_ratio(
             continue
         ijpt += 1
 
+        num_file_paths = (
+            prefix_dir / str(SysVar.NONE) / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+            prefix_dir / "sys_errors" / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+        )
+        den_file_paths = (
+            prefix_dir / str(SysVar.NONE) / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+            prefix_dir / "sys_errors" / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+        )
+        ratio_file_paths = (
+            prefix_dir
+            / str(SysVar.NONE)
+            / var_name
+            / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
+            prefix_dir
+            / "sys_errors"
+            / var_name
+            / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
+        )
         ax_arts = plot_ratio_single(
-            axs[0, ijpt],
-            axs[1, ijpt],
+            axs[:, ijpt],
             "errorbar",
-            str(SysVar.NONE),
-            var_name,
-            ijpt,
+            num_file_paths=num_file_paths,
+            den_file_paths=den_file_paths,
+            ratio_file_paths=ratio_file_paths,
+            num_label="groomed",
+            den_label="incl.",
+            ratio_label=r"\frac{groomed}{incl.}",
         )
 
         if plot_mc:
             for mc in mc_labels:
+                num_file_paths = (
+                    prefix_dir / mc / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+                    None,
+                )
+                den_file_paths = (
+                    prefix_dir / mc / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+                    None,
+                )
+                ratio_file_paths = (
+                    prefix_dir / mc / var_name / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
+                    None,
+                )
                 ax_arts.update(
                     plot_ratio_single(
-                        axs[0, ijpt],
-                        axs[1, ijpt],
+                        axs[:, ijpt],
                         "plot",
-                        mc,
-                        var_name,
-                        ijpt_true,
-                        is_mc=True,
-                        mc_label=mc,
+                        num_file_paths=num_file_paths,
+                        den_file_paths=den_file_paths,
+                        ratio_file_paths=ratio_file_paths,
+                        num_label=mc,
+                        den_label=mc,
+                        ratio_label=mc,
                         **(mc_hist_styles[mc]),
                     )
                 )
@@ -715,9 +677,9 @@ def plot_ratio(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = os.path.join(prefix, "plots", var_name)
-        os.makedirs(fig_save_dir, exist_ok=True)
-        fig_save_path = os.path.join(fig_save_dir, "ratio_incl_vs_hc.pdf")
+        fig_save_dir = prefix_dir / "plots" / var_name
+        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_path = fig_save_dir / "ratio_incl_vs_hc.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
 
@@ -755,11 +717,6 @@ def _():
         for x_var_name in common_vars + (var_name,):
             plot_profile(var_name, x_var_name, save_figs=save_figs, plot_mc=plot_mc)
     plt.show()
-    return
-
-
-@app.cell
-def _():
     return
 
 

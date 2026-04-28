@@ -11,7 +11,7 @@ import fastjet as fj
 import torch
 from tensordict import TensorDict
 
-from systematics import SysVar, get_jet_pt_bins, get_unfolding_iter
+from systematics import SysVar  # , get_jet_pt_bins, get_unfolding_iter
 
 vector.register_awkward()
 

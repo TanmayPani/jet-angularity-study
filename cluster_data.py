@@ -14,75 +14,81 @@ import vector
 import fastjet as fj
 
 from systematics import (
-    SysVar, 
-    apply_hadronic_correction_sys_var, 
-    apply_flat_track_pt_factors,
+    SysVar,
+    apply_hadronic_correction_sys_var,
+    # apply_flat_track_pt_factors,
     get_tracking_efficiency_sys_var_mask,
 )
 
 vector.register_awkward()
 
-bad_run_list : str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
-data_folder_path : str = "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
-output_path_prefix : str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets"
+bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
+data_folder_path: str = (
+    "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
+)
+output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets"
 
 jet_col_fields = {
-    "weight"        : pa.field("weight", pa.float32()),
-    "pt"            : pa.field("pt", pa.float32()),
-    "eta"           : pa.field("eta", pa.float32()),
-    "phi"           : pa.field("phi", pa.float32()),
-    "e"             : pa.field("e", pa.float32()),
-    "ncharged"      : pa.field("ncharged", pa.uint8()),
-    "nconstituents"      : pa.field("nconstituents", pa.uint8()),
+    "weight": pa.field("weight", pa.float32()),
+    "pt": pa.field("pt", pa.float32()),
+    "eta": pa.field("eta", pa.float32()),
+    "phi": pa.field("phi", pa.float32()),
+    "e": pa.field("e", pa.float32()),
+    "ncharged": pa.field("ncharged", pa.uint8()),
+    "nconstituents": pa.field("nconstituents", pa.uint8()),
 }
 constit_col_fields = {
-    "pt"    : pa.field("constit_pt", pa.list_(pa.float32())),
-    "eta"   : pa.field("constit_eta", pa.list_(pa.float32())),
-    "phi"   : pa.field("constit_phi", pa.list_(pa.float32())),
-    "e"     : pa.field("constit_e", pa.list_(pa.float32())),
+    "pt": pa.field("constit_pt", pa.list_(pa.float32())),
+    "eta": pa.field("constit_eta", pa.list_(pa.float32())),
+    "phi": pa.field("constit_phi", pa.list_(pa.float32())),
+    "e": pa.field("constit_e", pa.list_(pa.float32())),
     "charge": pa.field("constit_charge", pa.list_(pa.int8())),
 }
+
 
 @cache
 def get_schema(metadata=None):
     jet_fields = list(jet_col_fields.values())
     constit_fields = list(constit_col_fields.values())
-    schema =  pa.schema(jet_fields+constit_fields, metadata=metadata)
+    schema = pa.schema(jet_fields + constit_fields, metadata=metadata)
     print("Pyarrow schema for writing:", schema)
     return schema
 
+
 def jets_to_rb_dict(
-    jets: ak.Array, 
-    constituents: ak.Array, 
+    jets: ak.Array,
+    constituents: ak.Array,
 ) -> pa.RecordBatch:
     rec_batch_dict = {}
     for col_name, col_field in jet_col_fields.items():
         arr = getattr(jets, col_name)
         rec_batch_dict[col_field.name] = pa.array(
-            ak.flatten(arr, axis=1), 
+            ak.flatten(arr, axis=1),
             col_field.type,
         )
     for col_name, col_field in constit_col_fields.items():
         arr = getattr(constituents, col_name)
-        #print("constit", col_name, col_field, arr)
+        # print("constit", col_name, col_field, arr)
         rec_batch_dict[col_field.name] = pa.array(
-            ak.flatten(arr, axis=1), 
+            ak.flatten(arr, axis=1),
             col_field.type,
         )
     return pa.RecordBatch.from_pydict(rec_batch_dict, schema=get_schema())
 
+
 def inclusive_jets_sorted_by_pt(
-    cluster_sequence: fj.ClusterSequence, 
+    cluster_sequence: fj.ClusterSequence,
     min_pt: float = 2.0,
 ) -> tuple[ak.Array, ak.Array]:
     jets = cluster_sequence.inclusive_jets(min_pt=min_pt)
     sortedIndex = ak.argsort(jets.pt, axis=-1, ascending=False)
     jets = jets[sortedIndex]
     constituents = cluster_sequence.constituents(min_pt=min_pt)[sortedIndex]
-    sortedConstitIndex = ak.argsort(constituents.pt, axis=-1, ascending=False) 
+    sortedConstitIndex = ak.argsort(constituents.pt, axis=-1, ascending=False)
     constituents = constituents[sortedConstitIndex]
     print(f"------Clustered {ak.count(jets)} jets...")
     return jets, constituents
+
 
 def process_jets(
     jets,
@@ -99,10 +105,11 @@ def process_jets(
     jetCut = jetPtCut & jetEtaCut & jetNChargedCut
     jets = ak.drop_none(ak.mask(jets, jetCut), axis=1)
     constituents = ak.drop_none(ak.mask(constituents, jetCut), axis=1)
-    
+
     print(f"------After cuts, {ak.count(jets.pt)} jets left...")
 
     return jets, constituents
+
 
 @nb.jit
 def is_data_event_ht2(builder, events):
@@ -117,52 +124,69 @@ def is_data_event_ht2(builder, events):
         builder.append(hasHT2)
     return builder
 
+
 def process_events(
-    events, 
+    events,
     con_kt_min=None,
     is_embedding=False,
     sys_var=None,
     iseed=None,
 ):
-    tracks = ak.zip(dict(zip(
-        ("pt", "eta", "phi", "e", "charge"),
-        [
-            events[f"tracks._{branch}"] for branch in ("Pt", "Eta", "Phi", "E", "Charge")
-        ],
-        )), with_name="Momentum4D",)
+    tracks = ak.zip(
+        dict(
+            zip(
+                ("pt", "eta", "phi", "e", "charge"),
+                [
+                    events[f"tracks._{branch}"]
+                    for branch in ("Pt", "Eta", "Phi", "E", "Charge")
+                ],
+            )
+        ),
+        with_name="Momentum4D",
+    )
 
     if sys_var is not None:
-        match(sys_var):
+        match sys_var:
             case SysVar.TRACK_EFFICIENCY:
                 seed = np.random.default_rng(iseed).integers(sys.maxsize)
                 tracks = tracks[get_tracking_efficiency_sys_var_mask(events, seed)]
             case SysVar.TOWER_ET_CORRECTION:
                 events = apply_hadronic_correction_sys_var(events)
-            case _ :
+            case _:
                 pass
 
-    towers = ak.zip(dict(zip(
-        ("pt", "eta", "phi", "e", "charge"),
-        [
-            events[f"towers._{branch}"] for branch in ("Pt", "Eta", "Phi", "E", "Charge")
-        ],
-        )), with_name="Momentum4D",)
+    towers = ak.zip(
+        dict(
+            zip(
+                ("pt", "eta", "phi", "e", "charge"),
+                [
+                    events[f"towers._{branch}"]
+                    for branch in ("Pt", "Eta", "Phi", "E", "Charge")
+                ],
+            )
+        ),
+        with_name="Momentum4D",
+    )
 
     if con_kt_min is not None:
         tracks = ak.drop_none(ak.mask(tracks, tracks.pt > con_kt_min), axis=-1)
         towers = ak.drop_none(ak.mask(towers, towers.et > con_kt_min), axis=-1)
 
     isVzGood = np.abs(events._pVtx_Z) < 30.0
-    isMaxTrackPtOk = ak.fill_none(ak.max(tracks.pt, axis=-1), value=0) < 30.0 
+    isMaxTrackPtOk = ak.fill_none(ak.max(tracks.pt, axis=-1), value=0) < 30.0
     maxTowEts = ak.fill_none(ak.max(towers.et, axis=-1), value=0)
     isMaxTowEtOk = maxTowEts < 30.0
-    
-    isHT2Like = is_data_event_ht2(ak.ArrayBuilder(), events).snapshot() \
-                        if not is_embedding else maxTowEts > 4.0
 
-    eventFilter = isVzGood & isMaxTrackPtOk & isMaxTowEtOk & isHT2Like 
+    isHT2Like = (
+        is_data_event_ht2(ak.ArrayBuilder(), events).snapshot()
+        if not is_embedding
+        else maxTowEts > 4.0
+    )
+
+    eventFilter = isVzGood & isMaxTrackPtOk & isMaxTowEtOk & isHT2Like
 
     return ak.concatenate([tracks, towers], axis=-1), eventFilter
+
 
 def cluster_batch(
     events,
@@ -172,7 +196,7 @@ def cluster_batch(
     batch_weight=1.0,
 ):
     candidates, eventFilter = process_events(events, con_kt_min=con_kt_min)
-    #candidates = ak.concatenate([tracks, towers], axis=-1)
+    # candidates = ak.concatenate([tracks, towers], axis=-1)
     print(f"---Got {len(events)} ({len(candidates)}) events...")
     candidates = ak.drop_none(ak.mask(candidates, eventFilter))
     print(f"---Left with {len(candidates)} after cuts...")
@@ -181,15 +205,16 @@ def cluster_batch(
     jets, constituents = inclusive_jets_sorted_by_pt(clusterSeq, min_pt=cs_pt_min)
 
     jets, constituents = process_jets(
-        jets, 
-        constituents, 
-        jet_pt_min=10.0, 
+        jets,
+        constituents,
+        jet_pt_min=10.0,
     )
     jets["weight"], _ = ak.broadcast_arrays(batch_weight, jets.pt)
     return jets_to_rb_dict(
-        jets, 
-        constituents, 
+        jets,
+        constituents,
     )
+
 
 def worker(
     jet_definition,
@@ -231,6 +256,7 @@ def worker(
     writer.close()
     get_schema.cache_clear()
 
+
 def read_input_files(
     folder_path,
     bad_run_list,
@@ -263,16 +289,14 @@ def read_input_files(
 if __name__ == "__main__":
     do_test = False
     con_kt_min = 0.2
-    
+
     data_file_list, good_runs = read_input_files(
-        data_folder_path, 
-        bad_run_list, 
-        run_number_token_id=0
+        data_folder_path, bad_run_list, run_number_token_id=0
     )
 
     jetDef = fj.JetDefinition(
-        fj.antikt_algorithm, 
-        0.4, 
+        fj.antikt_algorithm,
+        0.4,
         fj.E_scheme,
     )
     output_file_name = (

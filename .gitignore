@@ -14,7 +14,7 @@ wheels/
 extra-*
 outputs/
 logs/
-test/
+#test/
 
 #Misc non-script
 _*
