@@ -15,7 +15,61 @@ from torchdata.nodes import Prefetcher
 from torchdata.nodes import PinMemory
 from torchdata.nodes import Loader, Header
 
-from churten.utils.data import TensorBatchSampler, undersample_and_random_split
+from churten.utils.data import (
+    TensorBatchSampler,
+    undersample_and_random_split,
+    random_split,
+)
+
+from churten.utils.nn.transform import Normalize
+
+
+class Log1p(torch.nn.Module):
+    def forward(self, x):
+        return torch.log1p(x)
+
+
+def _chunked_std_mean(
+    x: torch.Tensor,
+    dim: int = 0,
+    chunk_size: int = 500_000,
+    transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    eps=1e-6,
+    dtype=torch.float32,
+    device="cpu",
+):
+    dim = dim if dim >= 0 else x.dim() + dim
+    num_elem = x.shape[dim]
+    output_shape = x.shape[:dim] + x.shape[dim + 1 :]
+    sum = torch.zeros(output_shape, dtype=dtype, device=device)
+    sum_sq = torch.zeros(output_shape, dtype=dtype, device=device)
+    for chunk_idx in torch.arange(len(x)).split(chunk_size):
+        chunk = x[chunk_idx] if transform is None else transform(x[chunk_idx])
+        sum += chunk.sum(dim=dim)
+        sum_sq += chunk.square().sum(dim=dim)
+    mean = sum / num_elem
+    var = (sum_sq / num_elem) - mean * mean
+    std = var.clamp_min(0).sqrt().clamp_min(eps)
+    return std, mean
+
+
+def build_input_transform(
+    count_transform: str, input, dtype=torch.float32, device="cpu"
+):
+    if count_transform == "none":
+        return None
+    if count_transform == "z_norm":
+        std, mean = _chunked_std_mean(input)
+        return Normalize(mean.to(device), std.to(device))
+    if count_transform == "log1p_z_norm":
+        std, mean = _chunked_std_mean(input, transform=torch.log1p)
+        return torch.nn.Sequential(
+            Log1p(),
+            Normalize(mean.to(device), std.to(device)),
+        )
+    raise ValueError(
+        f"count_transform must be one of (none, z_norm, log1p_z_norm), but got {count_transform!r}"
+    )
 
 
 class TensorDictDataset(Dataset[tuple[Tensor, ...]]):
@@ -134,6 +188,55 @@ class TensorDictDataset(Dataset[tuple[Tensor, ...]]):
         return self.length
 
 
+def classwise_split(
+    pos_indices: Tensor,
+    neg_indices: Tensor,
+    *,
+    pos_stratify: Optional[Tensor] = None,
+    neg_stratify: Optional[Tensor] = None,
+    generator: Optional[torch.Generator] = None,
+    **kwargs,
+):
+
+    pos_train_indices, pos_valid_indices = random_split(
+        pos_indices,
+        stratify=pos_stratify,
+        generator=generator,
+        **kwargs,
+    )
+
+    neg_train_indices, neg_valid_indices = random_split(
+        neg_indices,
+        stratify=neg_stratify,
+        generator=generator,
+        **kwargs,
+    )
+
+    train_indices = torch.atleast_2d(
+        torch.cat([pos_train_indices, neg_train_indices], dim=-1)
+    )
+    valid_indices = torch.atleast_2d(
+        torch.cat([pos_valid_indices, neg_valid_indices], dim=-1)
+    )
+
+    # The vmap branch of random_split returns (num_replicas, n) tensors;
+    # the non-vmap branch (num_replicas=1) returns 1D (n,) tensors. Downstream
+    # TensorBatchSampler uses batch_dim=1, so promote 1D to (1, n) to keep a uniform
+    # contract regardless of num_replicas.
+    # if train_indices.dim() == 1:
+    #    train_indices = train_indices.unsqueeze(0)
+    # if valid_indices.dim() == 1:
+    #    valid_indices = valid_indices.unsqueeze(0)
+
+    train_idx_perm = torch.randperm(train_indices.shape[-1], generator=generator)
+    valid_idx_perm = torch.randperm(valid_indices.shape[-1], generator=generator)
+
+    return (
+        train_indices[..., train_idx_perm],
+        valid_indices[..., valid_idx_perm],
+    )
+
+
 def classwise_undersample_and_split(
     pos_indices: Tensor,
     neg_indices: Tensor,
@@ -158,8 +261,21 @@ def classwise_undersample_and_split(
         **kwargs,
     )
 
-    train_indices = torch.cat([pos_train_indices, neg_train_indices], dim=-1)
-    valid_indices = torch.cat([pos_valid_indices, neg_valid_indices], dim=-1)
+    train_indices = torch.atleast_2d(
+        torch.cat([pos_train_indices, neg_train_indices], dim=-1)
+    )
+    valid_indices = torch.atleast_2d(
+        torch.cat([pos_valid_indices, neg_valid_indices], dim=-1)
+    )
+
+    # The vmap branch of undersample_and_random_split returns (num_replicas, n) tensors;
+    # the non-vmap branch (num_replicas=1) returns 1D (n,) tensors. Downstream
+    # TensorBatchSampler uses batch_dim=1, so promote 1D to (1, n) to keep a uniform
+    # contract regardless of num_replicas.
+    # if train_indices.dim() == 1:
+    #    train_indices = train_indices.unsqueeze(0)
+    # if valid_indices.dim() == 1:
+    #    valid_indices = valid_indices.unsqueeze(0)
 
     train_idx_perm = torch.randperm(train_indices.shape[-1], generator=generator)
     valid_idx_perm = torch.randperm(valid_indices.shape[-1], generator=generator)

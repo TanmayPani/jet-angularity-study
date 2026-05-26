@@ -24,7 +24,7 @@ bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtim
 data_folder_path: str = (
     "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
 )
-output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets"
+output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/jets"
 
 jet_col_fields = {
     "weight": pa.field("weight", pa.float32()),

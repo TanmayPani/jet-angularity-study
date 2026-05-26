@@ -20,7 +20,7 @@ dependencies = [
   "thoda",
   "marimo>=0.20.2",
   "adjusttext>=1.3.0",
-  "pythia8mc>=8.317.0",
+  "pythia8mc>=8.317.1",
 ]
 
 [dependency-groups]

@@ -18,7 +18,10 @@ class SysVar(StrEnum):
     TRACK_EFFICIENCY = "track_pt_sys"
     JET_PT_RESOLUTION_0 = "jet_pt_res_sys_0"
     JET_PT_RESOLUTION_1 = "jet_pt_res_sys_1"
-    UNFOLDING_PRIOR = "unf_prior_sys"
+    UNFOLDING_PRIOR_SAME = "unf_prior_same"
+    UNFOLDING_PRIOR_LIKE_DATA = "unf_prior_like_data"
+    UNFOLDING_PRIOR_HERWIG7 = "unf_prior_herwig7"
+    UNFOLDING_PRIOR_PYTHIA8 = "unf_prior_pythia8"
     # UNFOLDING_BOOTSTRAP = "unf_bootstrap_sys"
     UNFOLDING_ITERATION_0 = "unf_iter_sys_0"
     UNFOLDING_ITERATION_1 = "unf_iter_sys_1"
@@ -161,10 +164,11 @@ def calculate_sys_uncertainty(
     hist_file_name: str,
     *sys_var_names: str,
     path_prefix: str = "",
+    feature_mode: str,
     is_equal_pref: bool = False,
 ):
     sys_var_paths = [
-        os.path.join(path_prefix, sys_var, var_name, hist_file_name)
+        os.path.join(path_prefix, sys_var, feature_mode, var_name, hist_file_name)
         for sys_var in sys_var_names
     ]
 
@@ -181,18 +185,24 @@ def calculate_prior_uncertainty(
     var_name: str,
     hist_file_name: str,
     path_prefix: str,
+    feature_mode: str,
+    prior_sysvar: SysVar = SysVar.UNFOLDING_PRIOR_LIKE_DATA,
 ):
     ratio_path = os.path.join(
-        path_prefix, str(SysVar.UNFOLDING_PRIOR), var_name, "ratio", hist_file_name
+        path_prefix,
+        str(prior_sysvar),
+        feature_mode,
+        var_name,
+        "ratio",
+        hist_file_name,
     )
     hist_ratio = torch.load(ratio_path, mmap=True)
     sys_var_prior = _unc_prior_var(hist_nominal, hist_ratio)
-    # print(var_name, hist_file_name, sys_var_prior, hist_ratio)
     return sys_var_prior
 
 
-def calculate_uncertainties(var_name: str, path_prefix: str):
-    nominal_path = os.path.join(path_prefix, "nominal", var_name)
+def calculate_uncertainties(var_name: str, path_prefix: str, feature_mode: str):
+    nominal_path = os.path.join(path_prefix, "nominal", feature_mode, var_name)
     sys_vars = defaultdict(dict)
     hist_nominal = {}
     for file_name in os.listdir(nominal_path):
@@ -208,6 +218,7 @@ def calculate_uncertainties(var_name: str, path_prefix: str):
             "unf_iter_sys_0",
             "unf_iter_sys_1",
             path_prefix=path_prefix,
+            feature_mode=feature_mode,
         )
 
         sys_vars[hist_name]["jet_pt_res_sys"] = calculate_sys_uncertainty(
@@ -217,6 +228,7 @@ def calculate_uncertainties(var_name: str, path_prefix: str):
             "jet_pt_res_sys_0",
             "jet_pt_res_sys_1",
             path_prefix=path_prefix,
+            feature_mode=feature_mode,
         )
 
         sys_vars[hist_name]["track_pt_sys"] = calculate_sys_uncertainty(
@@ -225,6 +237,7 @@ def calculate_uncertainties(var_name: str, path_prefix: str):
             file_name,
             "track_pt_sys",
             path_prefix=path_prefix,
+            feature_mode=feature_mode,
         )
 
         sys_vars[hist_name]["tower_et_corr_sys"] = calculate_sys_uncertainty(
@@ -233,11 +246,34 @@ def calculate_uncertainties(var_name: str, path_prefix: str):
             file_name,
             "tower_et_corr_sys",
             path_prefix=path_prefix,
+            feature_mode=feature_mode,
         )
 
-        sys_vars[hist_name]["unf_prior_sys"] = calculate_prior_uncertainty(
-            hist_nominal[hist_name], var_name, file_name, path_prefix=path_prefix
+        sys_vars[hist_name]["unf_prior_like_data"] = calculate_prior_uncertainty(
+            hist_nominal[hist_name],
+            var_name,
+            file_name,
+            path_prefix=path_prefix,
+            feature_mode=feature_mode,
         )
+
+        _h7_ratio_path = os.path.join(
+            path_prefix,
+            str(SysVar.UNFOLDING_PRIOR_HERWIG7),
+            feature_mode,
+            var_name,
+            "ratio",
+            file_name,
+        )
+        if os.path.exists(_h7_ratio_path):
+            sys_vars[hist_name]["unf_prior_herwig7"] = calculate_prior_uncertainty(
+                hist_nominal[hist_name],
+                var_name,
+                file_name,
+                path_prefix=path_prefix,
+                feature_mode=feature_mode,
+                prior_sysvar=SysVar.UNFOLDING_PRIOR_HERWIG7,
+            )
 
         squared_sum = torch.zeros_like(hist_nominal[hist_name]["bin_count"])
         for sys_var_unc in sys_vars[hist_name].values():
@@ -254,150 +290,138 @@ def save_sys_uncertainties(sys_vars, save_dir):
         torch.save(sys_var_dict, save_path)
 
 
-# def plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir):
-#    jpt_bins = get_jet_pt_bins(SysVar.NONE)
-#    num_cols = len(jpt_bins) - 1
-#    fig_scale = 5
-#
-#    fig = {}
-#    for mod in filename_mods:
-#        if mod == "h1_prof_incl_vs_sd":
-#            ylabel = rf"$\frac{{|\Delta \langle {var_label[f'sd_{var_name}']} \rangle|}}{{ \langle {var_label[f'sd_{var_name}']} \rangle}} \times 100$"
-#        else:
-#            ylabel = r"$\frac{|\Delta h|}{h} \times 100$"
-#
-#        if mod == "h1_projY_sd_ang":
-#            hc_var_name = f"sd_{var_name}"
-#            xlabel = rf"${var_label[hc_var_name]} {var_unit[hc_var_name]}$"
-#        else:
-#            xlabel = rf"${var_label[var_name]} {var_unit[var_name]}$"
-#
-#        fig[mod] = plt.figure(
-#            figsize=(num_cols * fig_scale, fig_scale + 1),
-#        )
-#        axs = fig[mod].subplots(
-#            1,
-#            num_cols,
-#            sharey=True,
-#            gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
-#        )
-#        axs[0].set_ylabel(ylabel, labelpad=10, size="xx-large")
-#
-#        _fig_single_sys = {}
-#        _axs_single_sys = {}
-#        for sys_var_name in sys_vars[f"{mod}_jpt0"].keys():
-#            _fig_single_sys[sys_var_name] = plt.figure(
-#                figsize=(num_cols * fig_scale, fig_scale + 1)
-#            )
-#            _axs_single_sys[sys_var_name] = _fig_single_sys[sys_var_name].subplots(
-#                1,
-#                num_cols,
-#                sharey=True,
-#                gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
-#            )
-#            _axs_single_sys[sys_var_name][0].set_ylabel(
-#                ylabel, labelpad=10, size="xx-large"
-#            )
-#
-#        for ijpt, (jpt_min, jpt_max) in enumerate(zip(jpt_bins[:-1], jpt_bins[1:])):
-#            hist_name = f"{mod}_jpt{ijpt}"
-#
-#            x = hnominal[hist_name]["bin_center"]
-#            x_err = hnominal[hist_name]["half_bin_width"]
-#
-#            bin_edges_low = x - x_err
-#            bin_edge_high = (x[-1] + x_err[-1]).unsqueeze_(0)
-#            bins = torch.concatenate((bin_edges_low, bin_edge_high))
-#
-#            y = hnominal[hist_name]["bin_count"]
-#            rel_stat_unc = (hnominal[hist_name]["bin_count_std"] / y).mul_(100)
-#            dy_stat_low = torch.zeros_like(y)
-#
-#            axs[ijpt].set_xlabel(xlabel, labelpad=10, size="x-large")
-#            axs[ijpt].text(
-#                0.15,
-#                0.55,
-#                rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
-#                transform=axs[ijpt].transAxes,
-#            )
-#            axs[ijpt].stairs(
-#                rel_stat_unc,
-#                bins,
-#                baseline=dy_stat_low.numpy(),
-#                fill=True,
-#                color="magenta",
-#                alpha=0.3,
-#                label="stat. (bootstrap)",
-#            )
-#
-#            total_rel_unc = (sys_vars[hist_name]["total_sys"] / y).mul_(100)
-#            axs[ijpt].stairs(
-#                total_rel_unc,
-#                bins,
-#                label="total sys",
-#                linewidth=2.0,
-#                linestyle="dotted",
-#            )
-#            for sys_var_name, sys_var in sys_vars[hist_name].items():
-#                if sys_var_name == "total_sys":
-#                    continue
-#                rel_unc = (sys_var / y).mul_(100)
-#
-#                _axs_single_sys[sys_var_name][ijpt].stairs(
-#                    rel_unc, bins, label=sys_var_name, linewidth=2.0
-#                )
-#                _axs_single_sys[sys_var_name][ijpt].stairs(
-#                    total_rel_unc,
-#                    bins,
-#                    label="total sys",
-#                    linewidth=2.0,
-#                    linestyle="dotted",
-#                )
-#                _axs_single_sys[sys_var_name][ijpt].stairs(
-#                    rel_stat_unc,
-#                    bins,
-#                    baseline=dy_stat_low.numpy(),
-#                    fill=True,
-#                    color="magenta",
-#                    alpha=0.3,
-#                    label="stat. (bootstrap)",
-#                )
-#                _axs_single_sys[sys_var_name][ijpt].set_xlabel(
-#                    xlabel, labelpad=10, size="x-large"
-#                )
-#                _axs_single_sys[sys_var_name][ijpt].text(
-#                    0.2,
-#                    0.75,
-#                    rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
-#                    transform=_axs_single_sys[sys_var_name][ijpt].transAxes,
-#                )
-#                axs[ijpt].stairs(rel_unc, bins, label=sys_var_name, linewidth=2.0)
-#
-#        axs[-1].legend()
-#
-#        for sys_var_name in sys_vars[f"{mod}_jpt0"].keys():
-#            _axs_single_sys[sys_var_name][-1].legend()
-#            _fig_single_sys[sys_var_name].savefig(
-#                os.path.join(fig_save_dir, f"{mod}-{sys_var_name}-sysQA.pdf"),
-#                bbox_inches="tight",
-#            )
-#            plt.close(_fig_single_sys[sys_var_name])
-#
-#        os.makedirs(fig_save_dir, exist_ok=True)
-#        fig_save_path = os.path.join(fig_save_dir, f"{mod}-sysQA.pdf")
-#        print("Saving figure to:", fig_save_path)
-#        fig[mod].savefig(fig_save_path, bbox_inches="tight")
+def _safe_rel_unc(unc, y):
+    """Return |unc / y| * 100 with NaN/inf scrubbed and a defensive copy."""
+    safe_y = torch.where(y != 0, y, torch.full_like(y, float("nan")))
+    return (
+        (unc.clone() / safe_y)
+        .abs_()
+        .mul_(100)
+        .nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+    )
+
+
+def plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir):
+    import re
+
+    jpt_bins = get_jet_pt_bins(SysVar.NONE)
+    num_cols = len(jpt_bins) - 1
+    fig_scale = 5
+    os.makedirs(fig_save_dir, exist_ok=True)
+
+    # Group hist names by mod (everything before "_jpt<i>").
+    mods = defaultdict(list)
+    for hist_name in sys_vars.keys():
+        m = re.match(r"^(.*)_jpt(\d+)$", hist_name)
+        if m is None:
+            continue
+        mods[m.group(1)].append(int(m.group(2)))
+
+    ylabel = r"$\frac{|\Delta h|}{h} \times 100$"
+
+    for mod, ijpts in mods.items():
+        ijpts = sorted(set(ijpts))
+        first_hname = f"{mod}_jpt{ijpts[0]}"
+        sv_keys = [k for k in sys_vars[first_hname].keys() if k != "total_sys"]
+
+        fig = plt.figure(figsize=(num_cols * fig_scale, fig_scale + 1))
+        axs = fig.subplots(
+            1, num_cols, sharey=True,
+            gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
+        )
+        if num_cols == 1:
+            axs = [axs]
+        axs[0].set_ylabel(ylabel, labelpad=10, size="xx-large")
+
+        single_figs, single_axs = {}, {}
+        for sv in sv_keys:
+            single_figs[sv] = plt.figure(figsize=(num_cols * fig_scale, fig_scale + 1))
+            ax_arr = single_figs[sv].subplots(
+                1, num_cols, sharey=True,
+                gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
+            )
+            if num_cols == 1:
+                ax_arr = [ax_arr]
+            ax_arr[0].set_ylabel(ylabel, labelpad=10, size="xx-large")
+            single_axs[sv] = ax_arr
+
+        for ijpt in ijpts:
+            if ijpt >= num_cols:
+                continue
+            hist_name = f"{mod}_jpt{ijpt}"
+            hist = hnominal[hist_name]
+            x = hist["bin_center"]
+            x_err = hist["half_bin_width"]
+            bin_edges_low = x - x_err
+            bin_edge_high = (x[-1] + x_err[-1]).unsqueeze(0)
+            bins = torch.concatenate((bin_edges_low, bin_edge_high))
+
+            y = hist["bin_count"]
+            jpt_min, jpt_max = jpt_bins[ijpt], jpt_bins[ijpt + 1]
+
+            stat_unc = hist.get("bin_count_std", torch.zeros_like(y))
+            rel_stat = _safe_rel_unc(stat_unc, y)
+            total_rel = _safe_rel_unc(sys_vars[hist_name]["total_sys"], y)
+
+            ax = axs[ijpt]
+            ax.text(
+                0.15, 0.55,
+                rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
+                transform=ax.transAxes,
+            )
+            zero_base = torch.zeros_like(y).numpy()
+            ax.stairs(rel_stat, bins, baseline=zero_base,
+                      fill=True, color="magenta", alpha=0.3,
+                      label="stat. (bootstrap)")
+            ax.stairs(total_rel, bins, label="total sys",
+                      linewidth=2.0, linestyle="dotted")
+
+            for sv in sv_keys:
+                rel = _safe_rel_unc(sys_vars[hist_name][sv], y)
+                ax.stairs(rel, bins, label=sv, linewidth=2.0)
+
+                sax = single_axs[sv][ijpt]
+                sax.stairs(rel_stat, bins, baseline=zero_base,
+                           fill=True, color="magenta", alpha=0.3,
+                           label="stat. (bootstrap)")
+                sax.stairs(total_rel, bins, label="total sys",
+                           linewidth=2.0, linestyle="dotted")
+                sax.stairs(rel, bins, label=sv, linewidth=2.0)
+                sax.text(
+                    0.2, 0.75,
+                    rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
+                    transform=sax.transAxes,
+                )
+
+        axs[-1].legend()
+        combined_path = os.path.join(fig_save_dir, f"{mod}-sysQA.pdf")
+        print("Saving figure to:", combined_path)
+        fig.savefig(combined_path, bbox_inches="tight")
+        plt.close(fig)
+
+        for sv in sv_keys:
+            single_axs[sv][-1].legend()
+            sv_path = os.path.join(fig_save_dir, f"{mod}-{sv}-sysQA.pdf")
+            single_figs[sv].savefig(sv_path, bbox_inches="tight")
+            plt.close(single_figs[sv])
 
 
 def main():
+    import json
+
     path_prefix = "outputs/histograms"
+    with open("runtime-files/config.json") as _cfg_file:
+        feature_mode = json.load(_cfg_file)["feature_mode"]
 
     for var_name in common_vars + angularities:
-        sys_vars, hnominal = calculate_uncertainties(var_name, path_prefix=path_prefix)
-        save_dir = os.path.join(path_prefix, "sys_errors", var_name)
+        sys_vars, hnominal = calculate_uncertainties(
+            var_name, path_prefix=path_prefix, feature_mode=feature_mode
+        )
+        save_dir = os.path.join(path_prefix, "sys_errors", feature_mode, var_name)
         save_sys_uncertainties(sys_vars, save_dir)
-        # fig_save_dir = os.path.join(path_prefix, "plots", var_name)
-        # plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir)
+        fig_save_dir = os.path.join(path_prefix, "plots", feature_mode, var_name)
+        plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir)
+    print("Done!")
 
 
 if __name__ == "__main__":

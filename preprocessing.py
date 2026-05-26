@@ -1,4 +1,4 @@
-import os
+from pathlib import Path
 
 from tqdm import tqdm
 import numba as nb
@@ -29,6 +29,7 @@ jet_columns = (
     "pt",
     "eta",
     "phi",
+    "m",
     "nef",
     "ch_ang_k1_b0.5",
     "ch_ang_k1_b1",
@@ -43,6 +44,7 @@ jet_columns = (
     "sd_pt",
     "sd_eta",
     "sd_phi",
+    "sd_m",
     "sd_dR",
     "sd_symmetry",
     "sd_ch_ang_k1_b0.5",
@@ -51,6 +53,18 @@ jet_columns = (
     "sd_ch_ang_k2_b0",
 )
 jet_r = 0.4
+
+con_pt_bins = np.asarray(
+    (0.2, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 10.0, 100.0), dtype=np.float32
+)
+con_dr_bins = np.asarray(
+    (0.0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 1.0), dtype=np.float32
+)
+N_PT = con_pt_bins.shape[0] - 1
+N_DR = con_dr_bins.shape[0] - 1
+N_BINS = N_PT * N_DR
+
+FEATURE_MODES = ("angularities", "bin_counts", "combined", "kinematics")
 
 
 @nb.jit
@@ -69,6 +83,32 @@ def match_sd(builder, sd_jet_constits, jet_constits):
                     break
         builder.end_list()
     return builder
+
+
+@nb.jit(nopython=True)
+def get_con_pt_dr_bins(jets, constits):
+    n_pt = con_pt_bins.shape[0] - 1
+    n_dr = con_dr_bins.shape[0] - 1
+    px_sum = np.zeros((len(jets), n_pt, n_dr), dtype=np.float32)
+    py_sum = np.zeros((len(jets), n_pt, n_dr), dtype=np.float32)
+    for ijet in range(len(jets)):
+        tot_ch_px = np.float32(0.0)
+        tot_ch_py = np.float32(0.0)
+        for iconstit, constit in enumerate(constits[ijet]):
+            if constits.charge[ijet][iconstit] != 0:
+                tot_ch_px += constit.px
+                tot_ch_py += constit.py
+                dr = jets[ijet].deltaR(constit)
+                dr_bin = np.searchsorted(con_dr_bins, dr) - 1
+                pt_bin = np.searchsorted(con_pt_bins, constit.pt) - 1
+                if 0 <= pt_bin < n_pt and 0 <= dr_bin < n_dr:
+                    px_sum[ijet, pt_bin, dr_bin] += constit.px
+                    py_sum[ijet, pt_bin, dr_bin] += constit.py
+        tot_ch_pt = np.sqrt(tot_ch_px * tot_ch_px + tot_ch_py * tot_ch_py)
+        if tot_ch_pt > np.float32(0.0):
+            px_sum[ijet] /= tot_ch_pt
+            py_sum[ijet] /= tot_ch_pt
+    return np.sqrt(px_sum * px_sum + py_sum * py_sum)
 
 
 def get_softdrop_groomed_jets(constituents, jet_def, **kwargs):
@@ -119,34 +159,66 @@ def get_softdrop_groomed_jets(constituents, jet_def, **kwargs):
     return sd_jets, sd_constituents
 
 
-def to_jet_and_consitit_vectors(arr):
-    jets = ak.zip(
-        dict(
-            pt=ak.enforce_type(arr.pt, "float32"),
-            eta=ak.enforce_type(arr.eta, "float32"),
-            phi=ak.enforce_type(arr.phi, "float32"),
-            e=ak.enforce_type(arr.e, "float32"),
-            weight=ak.enforce_type(arr.weight, "float32"),
-            ncharged=ak.enforce_type(arr.ncharged, "uint8"),
-            nconstituents=ak.enforce_type(arr.nconstituents, "uint8"),
-        ),
-        with_name="Momentum4D",
+@nb.jit(nopython=True)
+def _build_ang_sums_sparse(
+    jets, constits, bin_idx_builder, ang_sums_builder, count_builder
+):
+    n_pt = con_pt_bins.shape[0] - 1
+    n_dr = con_dr_bins.shape[0] - 1
+    # Single reused buffers — O(1) memory regardless of n_jets.
+    # jet_buf channel layout (axis=-1):
+    #   0: sum(pT_i)           -> k=1, b=0
+    #   1: sum(pT_i * dR^0.5) -> k=1, b=0.5  (LHA)
+    #   2: sum(pT_i * dR)     -> k=1, b=1    (girth)
+    #   3: sum(pT_i * dR^2)   -> k=1, b=2    (thrust)
+    #   4: sum(pT_i^2)        -> k=2, b=0    (p_T^D^2)
+    # To recover angularity: sum_bins(channel) / (pT_jet^kappa * jet_r^beta)
+    jet_buf = np.zeros((n_pt * n_dr, 5), dtype=np.float32)
+    jet_count = np.zeros((n_pt * n_dr,), dtype=np.int32)
+    for ijet in range(len(jets)):
+        for cell in range(n_pt * n_dr):
+            jet_count[cell] = 0
+            for ch in range(5):
+                jet_buf[cell, ch] = np.float32(0.0)
+        for iconstit, constit in enumerate(constits[ijet]):
+            if constits.charge[ijet][iconstit] != 0:
+                dr = jets[ijet].deltaR(constit)
+                dr_bin = np.searchsorted(con_dr_bins, dr) - 1
+                pt_bin = np.searchsorted(con_pt_bins, constit.pt) - 1
+                if 0 <= pt_bin < n_pt and 0 <= dr_bin < n_dr:
+                    cell = pt_bin * n_dr + dr_bin
+                    jet_count[cell] += 1
+                    cpt = constit.pt
+                    jet_buf[cell, 0] += cpt
+                    jet_buf[cell, 1] += cpt * np.sqrt(dr)
+                    jet_buf[cell, 2] += cpt * dr
+                    jet_buf[cell, 3] += cpt * dr * dr
+                    jet_buf[cell, 4] += cpt * cpt
+        bin_idx_builder.begin_list()
+        ang_sums_builder.begin_list()
+        count_builder.begin_list()
+        for cell in range(n_pt * n_dr):
+            if jet_count[cell] > 0:
+                bin_idx_builder.integer(cell)
+                count_builder.integer(jet_count[cell])
+                for ch in range(5):
+                    ang_sums_builder.real(jet_buf[cell, ch])
+        bin_idx_builder.end_list()
+        ang_sums_builder.end_list()
+        count_builder.end_list()
+    return bin_idx_builder, ang_sums_builder, count_builder
+
+
+def get_con_pt_dr_bins_sparse(jets, constituents):
+    bin_idx_builder, ang_sums_builder, count_builder = _build_ang_sums_sparse(
+        jets, constituents, ak.ArrayBuilder(), ak.ArrayBuilder(), ak.ArrayBuilder()
     )
 
-    jets["m"] = jets.m
+    jets["bin_index"] = bin_idx_builder.snapshot()
+    jets["bin_count"] = count_builder.snapshot()
+    jets["bin_sum_wts"] = ang_sums_builder.snapshot()
 
-    constituents = ak.zip(
-        {
-            key: ak.enforce_type(
-                arr[f"constit_{key}"],
-                "var*float32" if key != "charge" else "var*int8",
-            )
-            for key in ("pt", "eta", "phi", "e", "charge")
-        },
-        with_name="Momentum4D",
-    )
-
-    return jets, constituents
+    return jets
 
 
 def calculate_angularities(jets, constituents):
@@ -181,7 +253,37 @@ def calculate_angularities(jets, constituents):
     return jets
 
 
-def process_table(table, **extra_fields):
+def to_jet_and_consitit_vectors(arr):
+    jets = ak.zip(
+        dict(
+            pt=ak.enforce_type(arr.pt, "float32"),
+            eta=ak.enforce_type(arr.eta, "float32"),
+            phi=ak.enforce_type(arr.phi, "float32"),
+            e=ak.enforce_type(arr.e, "float32"),
+            weight=ak.enforce_type(arr.weight, "float32"),
+            ncharged=ak.enforce_type(arr.ncharged, "uint8"),
+            nconstituents=ak.enforce_type(arr.nconstituents, "uint8"),
+        ),
+        with_name="Momentum4D",
+    )
+
+    jets["m"] = jets.m
+
+    constituents = ak.zip(
+        {
+            key: ak.enforce_type(
+                arr[f"constit_{key}"],
+                "var*float32" if key != "charge" else "var*int8",
+            )
+            for key in ("pt", "eta", "phi", "e", "charge")
+        },
+        with_name="Momentum4D",
+    )
+
+    return jets, constituents
+
+
+def process_table(table, feature_mode, **extra_fields):
     ak_array = ak.from_arrow(
         table,
         generate_bitmasks=True,
@@ -194,21 +296,30 @@ def process_table(table, **extra_fields):
         R0=jet_r,
     )
 
-    jets = calculate_angularities(jets, constituents)
-    sd_jets = calculate_angularities(sd_jets, sd_constituents)
-
     for coord in ("pt", "eta", "phi"):
         jets[f"leading_constit_{coord}"] = getattr(constituents, coord)[:, 0]
         jets[f"subleading_constit_{coord}"] = getattr(constituents, coord)[:, 1]
+
+    match feature_mode:
+        case "bin_counts":
+            jets = get_con_pt_dr_bins_sparse(jets, constituents)
+            sd_jets = get_con_pt_dr_bins_sparse(sd_jets, sd_constituents)
+        case "angularities":
+            jets = calculate_angularities(jets, constituents)
+            sd_jets = calculate_angularities(sd_jets, sd_constituents)
+        case "combined":
+            jets = get_con_pt_dr_bins_sparse(jets, constituents)
+            sd_jets = get_con_pt_dr_bins_sparse(sd_jets, sd_constituents)
+            # TODO: Add summing over jets["bin_sum_wts"] to calculate angularities here
+        case _:
+            raise ValueError(
+                f"feature_mode input must be [bin_counts, angularities, combined] but got {feature_mode}!"
+            )
 
     out_dict = {key: pa.array(getattr(jets, key)) for key in jets.fields}
     for key in sd_jets.fields:
         # print(key)
         out_dict[f"sd_{key}"] = pa.array(getattr(sd_jets, key))
-    for key in constituents.fields:
-        out_dict[f"constit_{key}"] = pa.array(getattr(constituents, key))
-    for key in sd_constituents.fields:
-        out_dict[f"sd_constit_{key}"] = pa.array(getattr(sd_constituents, key))
 
     if len(extra_fields) > 0:
         print("------> Adding extra fields:", extra_fields)
@@ -219,54 +330,26 @@ def process_table(table, **extra_fields):
     return pa.RecordBatch.from_pydict(out_dict)
 
 
-def preprocess_data(source_dir, file_name, **kwargs):
-    # input_path = os.path.join(source_dir, "data.arrow")
-    input_path = os.path.join(source_dir, file_name)
-    buffer = pa.memory_map(input_path, "rb")
-    output_rb = process_table(pa.ipc.open_file(buffer).read_all(), **kwargs)
+def preprocess_data(input_dir, output_dir, file_name, feature_mode, **kwargs):
+    buffer = pa.memory_map(str(input_dir / file_name), "rb")
+    output_rb = process_table(
+        pa.ipc.open_file(buffer).read_all(), feature_mode, **kwargs
+    )
 
-    output_path = os.path.join(source_dir, f"preproc_{file_name}")
-    with pa.OSFile(output_path, "wb") as sink:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with pa.OSFile(str(output_dir / file_name), "wb") as sink:
         with pa.ipc.new_file(sink, output_rb.schema) as writer:
             writer.write_batch(output_rb)
 
-    # return output_path
 
-
-def preprocess_embedding_file(source_dir, sysvar, finput):
-    root_dir = os.path.join(source_dir, "embedding", str(sysvar))
-    extra_fields = {}
-    extra_fields["is_data"] = False
-    extra_fields["is_matched"] = 1 if "matches" in finput else 0
-    outfile = os.path.join(root_dir, finput)
-    print("Writing to file:", outfile)
-    sink = pa.OSFile(outfile, "wb")
-    writer = None
-    njets = 0
-    nbytes = 0
-    for ipth, (pth_low, pth_high) in enumerate(zip(pth_bins[:-1], pth_bins[1:])):
-        extra_fields["pth_bin"] = ipth
-        infile = os.path.join(root_dir, f"ptHat{pth_low}to{pth_high}", finput)
-        print("> Reading embedding file from:", infile)
-        buffer = pa.memory_map(infile, "rb")
-        output_rb = process_table(
-            pa.ipc.open_file(buffer).read_all(),
-            **extra_fields,
-        )
-        writer = writer or pa.ipc.new_file(sink, output_rb.schema)
-        writer.write_batch(output_rb)
-        njets += len(output_rb)
-        nbytes += output_rb.nbytes
-        print(
-            f"---> Processed {njets} jets, wrote {nbytes / (1024 * 1024):.2f} mb to file..."
-        )
-    if writer is not None:
-        writer.close()
-
-
-def preprocess_embedding(source_dir, sysvar):
-    for infile in ("gen-matches", "reco-matches", "misses", "fakes"):
-        preprocess_embedding_file(source_dir, sysvar, f"{infile}.arrow")
+def _densify_bin_counts(chunk):
+    idxs = chunk.column("bin_index").to_pylist()
+    cnts = chunk.column("bin_count").to_pylist()
+    out = np.zeros((len(idxs), N_BINS), dtype=np.float32)
+    for i, (ix, ct) in enumerate(zip(idxs, cnts)):
+        if ix:
+            out[i, ix] = ct
+    return torch.from_numpy(out)
 
 
 def to_tensordict(
@@ -275,7 +358,13 @@ def to_tensordict(
     columns=None,
     prefix=None,
     max_chunksize=None,
+    feature_mode="angularities",
 ):
+    if feature_mode not in FEATURE_MODES:
+        raise ValueError(
+            f"feature_mode must be one of {FEATURE_MODES}, got {feature_mode!r}"
+        )
+
     table = pa.concat_tables((data_like, sim_like))
     target = torch.concatenate(
         (
@@ -284,11 +373,36 @@ def to_tensordict(
         )
     )
 
-    columns = columns or table.column_names
+    # `bin_index` and `bin_count` are list<int>-typed (variable per-jet length) and
+    # break `to_pydict + zip` if mixed with scalar columns, so iterate them via a
+    # separate sub-table and densify per chunk. The jet (scalar) columns iterate via
+    # a fast `to_numpy` + np.stack path — both yield (chunk_size, k) float32 tensors
+    # that get concatenated for the combined mode.
+    if feature_mode == "bin_counts":
+        jet_input_columns: tuple[str, ...] = ()
+        use_bin_block = True
+        n_features = N_BINS
+    elif feature_mode == "combined":
+        jet_input_columns = (
+            tuple(columns)
+            if columns is not None
+            else tuple(
+                c for c in table.column_names if c not in ("bin_index", "bin_count")
+            )
+        )
+        use_bin_block = True
+        n_features = len(jet_input_columns) + N_BINS
+    else:  # "angularities" / "kinematics"
+        jet_input_columns = (
+            tuple(columns) if columns is not None else tuple(table.column_names)
+        )
+        use_bin_block = False
+        n_features = len(jet_input_columns)
+
     tdict = (
         TensorDict(
             dict(
-                input=torch.zeros((len(columns),), dtype=torch.float32),
+                input=torch.zeros((n_features,), dtype=torch.float32),
                 target=torch.zeros((), dtype=torch.float32),
                 weight=torch.ones((), dtype=torch.float32),
                 is_data=torch.zeros((), dtype=torch.bool),
@@ -301,22 +415,51 @@ def to_tensordict(
         .memmap_like(prefix=prefix)
     )
 
-    _input = table.select(columns)
+    jet_table = table.select(list(jet_input_columns)) if jet_input_columns else None
+    bin_table = table.select(["bin_index", "bin_count"]) if use_bin_block else None
     _target = torch.as_tensor(target, dtype=torch.float32)
     _weight = torch.as_tensor(table["weight"].to_numpy(), dtype=torch.float32)
     _is_data = torch.as_tensor(table["is_data"].to_numpy(), dtype=torch.bool)
     _is_matched = torch.as_tensor(table["is_matched"].to_numpy(), dtype=torch.int64)
     _pth_bin = torch.as_tensor(table["pth_bin"].to_numpy(), dtype=torch.int64)
 
+    jet_batches = (
+        jet_table.to_batches(max_chunksize=max_chunksize)
+        if jet_table is not None
+        else None
+    )
+    bin_batches = (
+        bin_table.to_batches(max_chunksize=max_chunksize)
+        if bin_table is not None
+        else None
+    )
+
     pos = 0
-    pbar = tqdm(total=len(_input))
-    for chunk in _input.to_batches(max_chunksize=max_chunksize):
-        chunk_size = len(chunk)
+    pbar = tqdm(total=len(table))
+    for batch_idx in range(
+        max(
+            len(jet_batches) if jet_batches is not None else 0,
+            len(bin_batches) if bin_batches is not None else 0,
+        )
+    ):
+        parts = []
+        if jet_batches is not None:
+            jc = jet_batches[batch_idx]
+            cols = [
+                jc.column(name)
+                .to_numpy(zero_copy_only=False)
+                .astype(np.float32, copy=False)
+                for name in jet_input_columns
+            ]
+            parts.append(torch.from_numpy(np.stack(cols, axis=-1)))
+        if bin_batches is not None:
+            parts.append(_densify_bin_counts(bin_batches[batch_idx]))
+        chunk_size = parts[0].shape[0]
+        input_tensor = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
+
         _tdict = TensorDict(
             dict(
-                input=torch.as_tensor(
-                    list(zip(*chunk.to_pydict().values())), dtype=torch.float32
-                ),
+                input=input_tensor,
                 target=_target[pos : pos + chunk_size],
                 weight=_weight[pos : pos + chunk_size],
                 is_data=_is_data[pos : pos + chunk_size],
@@ -334,6 +477,54 @@ def to_tensordict(
     return tdict
 
 
+def preprocess_embedding_file(input_dir, output_dir, feature_mode, file_name):
+    extra_fields = {}
+    extra_fields["is_data"] = False
+    extra_fields["is_matched"] = 1 if "matches" in file_name else 0
+    outfile = output_dir / file_name
+    print("Writing to file:", outfile)
+    sink = pa.OSFile(str(outfile), "wb")
+    writer = None
+    njets = 0
+    nbytes = 0
+    for ipth, (pth_low, pth_high) in enumerate(zip(pth_bins[:-1], pth_bins[1:])):
+        infile = input_dir / f"ptHat{pth_low}to{pth_high}" / file_name
+        print("> Reading embedding file from:", infile)
+        buffer = pa.memory_map(str(infile), "rb")
+        extra_fields["pth_bin"] = ipth
+        output_rb = process_table(
+            pa.ipc.open_file(buffer).read_all(),
+            feature_mode,
+            **extra_fields,
+        )
+        writer = writer or pa.ipc.new_file(sink, output_rb.schema)
+        writer.write_batch(output_rb)
+        njets += len(output_rb)
+        nbytes += output_rb.nbytes
+        print(
+            f"---> Processed {njets} jets, wrote {nbytes / (1024 * 1024):.2f} mb to file..."
+        )
+    if writer is not None:
+        writer.close()
+
+
+def preprocess_embedding(input_dir, output_dir, sysvar, feature_mode):
+    _input_dir = input_dir / "embedding" / str(sysvar)
+    if not _input_dir.exists():
+        print(
+            f"[preprocess_embedding] no embedding dir at {_input_dir}; "
+            f"skipping {sysvar}. Run cluster_embedding.py for this sysvar first."
+        )
+        return
+
+    _output_dir = output_dir / "embedding" / str(sysvar)
+    _output_dir.mkdir(parents=True, exist_ok=True)
+    for infile in ("gen-matches", "reco-matches", "misses", "fakes"):
+        preprocess_embedding_file(
+            _input_dir, _output_dir, feature_mode, f"{infile}.arrow"
+        )
+
+
 def replace_table_column(table, name, array, new_name=None, **kwargs):
     col_index = table.schema.get_field_index(name)
     col_name = new_name or name
@@ -341,14 +532,35 @@ def replace_table_column(table, name, array, new_name=None, **kwargs):
     return table.set_column(col_index, col_name, column)
 
 
-def make_datasets_for_unfolding(source_dir, sysvar):
+def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
+
     buffers = []
 
-    if sysvar == SysVar.UNFOLDING_PRIOR:
-        root_dir = os.path.join(source_dir, "embedding", str(SysVar.NONE))
-        buffers.append(pa.memory_map(os.path.join(root_dir, "reco-matches.arrow")))
+    _PRIOR_VARIANTS = (
+        SysVar.UNFOLDING_PRIOR_LIKE_DATA,  # TODO: Make sure paths are set properly for .arrow outputs of omnisequential.py
+        SysVar.UNFOLDING_PRIOR_HERWIG7,
+        SysVar.UNFOLDING_PRIOR_PYTHIA8,
+    )
+
+    if sysvar in _PRIOR_VARIANTS:
+        # Prior-systematic closure variants: the "data" side is reco-level
+        # pseudo-data (reweighted reco-matches + fakes), the "sim" side stays
+        # nominal so the closure test is meaningful. omnisequential.py
+        # (LIKE_DATA) and reverse_omnisequential.py (HERWIG7 / PYTHIA8) have
+        # already baked the reweighted weights into
+        # embedding/<sysvar>/{reco-matches,fakes}.arrow, so all three travel
+        # the same path here.
+
+        embedding_input_path = input_dir / "embedding" / str(SysVar.NONE)
+        buffers.append(
+            pa.memory_map(
+                str(input_dir / "embedding" / str(sysvar) / "reco-matches.arrow")
+            )
+        )
         data_match_table = pa.ipc.open_file(buffers[-1]).read_all()
-        buffers.append(pa.memory_map(os.path.join(root_dir, "fakes.arrow")))
+        buffers.append(
+            pa.memory_map(str(input_dir / "embedding" / str(sysvar) / "fakes.arrow"))
+        )
         data_fake_table = pa.ipc.open_file(buffers[-1]).read_all()
         data_table = pa.concat_tables((data_match_table, data_fake_table))
 
@@ -356,25 +568,17 @@ def make_datasets_for_unfolding(source_dir, sysvar):
         is_matched_col = np.full_like(data_table["is_matched"].to_numpy(), -1)
         data_table = replace_table_column(data_table, "is_data", is_data_col)
         data_table = replace_table_column(data_table, "is_matched", is_matched_col)
-
-        omniseq_wts = np.load("outputs/omnisequential/omniseq-wts-iter2.npz")
-        omniseq_wt_keys = list(omniseq_wts.keys())
-        closure_wt_index = omniseq_wt_keys[-2]
-        closure_wts = pa.array(omniseq_wts[closure_wt_index], type=pa.float32())
-        data_table = replace_table_column(data_table, "weight", closure_wts)
-        out_dir = os.path.join(source_dir, "embedding", str(sysvar), "tensordicts")
     else:
-        buffers.append(pa.memory_map(os.path.join(source_dir, "preproc_data.arrow")))
+        embedding_input_path = input_dir / "embedding" / str(sysvar)
+        buffers.append(pa.memory_map(str(input_dir / "data.arrow")))
         data_table = pa.ipc.open_file(buffers[-1]).read_all()
-        root_dir = os.path.join(source_dir, "embedding", str(sysvar))
-        out_dir = os.path.join(root_dir, "tensordicts")
 
-    os.makedirs(out_dir, exist_ok=True)
-    print("Tensordicts will be written to", out_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    print("Tensordicts will be written to", output_dir)
 
-    buffers.append(pa.memory_map(os.path.join(root_dir, "reco-matches.arrow")))
+    buffers.append(pa.memory_map(str(embedding_input_path / "reco-matches.arrow")))
     reco_match_table = pa.ipc.open_file(buffers[-1]).read_all()
-    buffers.append(pa.memory_map(os.path.join(root_dir, "fakes.arrow")))
+    buffers.append(pa.memory_map(str(embedding_input_path / "fakes.arrow")))
     reco_fakes_table = pa.ipc.open_file(buffers[-1]).read_all()
     reco_table = pa.concat_tables((reco_match_table, reco_fakes_table))
 
@@ -382,13 +586,14 @@ def make_datasets_for_unfolding(source_dir, sysvar):
         data_table,
         reco_table,
         columns=jet_columns,
-        prefix=os.path.join(out_dir, "det_lvl"),
+        prefix=output_dir / "det_lvl",
         max_chunksize=100000,
+        feature_mode=feature_mode,
     )
 
-    buffers.append(pa.memory_map(os.path.join(root_dir, "gen-matches.arrow")))
+    buffers.append(pa.memory_map(str(embedding_input_path / "gen-matches.arrow")))
     gen_match_table = pa.ipc.open_file(buffers[-1]).read_all()
-    buffers.append(pa.memory_map(os.path.join(root_dir, "misses.arrow")))
+    buffers.append(pa.memory_map(str(embedding_input_path / "misses.arrow")))
     gen_misses_table = pa.ipc.open_file(buffers[-1]).read_all()
     gen_table = pa.concat_tables((gen_match_table, gen_misses_table))
 
@@ -403,29 +608,164 @@ def make_datasets_for_unfolding(source_dir, sysvar):
         gen_table_data_like,
         gen_table,
         columns=jet_columns,
-        prefix=os.path.join(out_dir, "part_lvl"),
+        prefix=output_dir / "part_lvl",
         max_chunksize=100000,
+        feature_mode=feature_mode,
     )
 
+    return partlvl_td, detlvl_td
 
-def main(source_dir, sysvar, redo_preprocessing=True, redo_datasets=False):
-    if (sysvar != SysVar.UNFOLDING_PRIOR) and redo_preprocessing:
+
+# def make_datasets_for_closure(source_dir, feature_mode="angularities"):
+#    if feature_mode not in FEATURE_MODES:
+#        raise ValueError(
+#            f"feature_mode must be one of {FEATURE_MODES}, got {feature_mode!r}"
+#        )
+#
+#    root_dir = source_dir / "embedding" / str(SysVar.NONE)
+#    if not root_dir.exists():
+#        print(
+#            f"[make_datasets_for_closure] no embedding dir at {root_dir}; skipping. "
+#            f"Run cluster_embedding.py + preprocessing for {SysVar.NONE} first."
+#        )
+#        return
+#
+#    buffers = []
+#
+#    buffers.append(pa.memory_map(str(root_dir / "reco-matches.arrow")))
+#    reco_match_table = pa.ipc.open_file(buffers[-1]).read_all()
+#    buffers.append(pa.memory_map(str(root_dir / "fakes.arrow")))
+#    reco_fakes_table = pa.ipc.open_file(buffers[-1]).read_all()
+#    reco_table = pa.concat_tables((reco_match_table, reco_fakes_table))
+#
+#    # Pseudo-data side: identical row content to sim, relabeled is_data=True / is_matched=-1.
+#    # weight stays as the original per-pthat MC weight — NO omniseq overwrite. This is what
+#    # makes this a true MC self-closure rather than a prior-systematic restriction.
+#    data_table = pa.concat_tables((reco_match_table, reco_fakes_table))
+#    data_table = replace_table_column(
+#        data_table, "is_data", np.full_like(data_table["is_data"].to_numpy(), True)
+#    )
+#    data_table = replace_table_column(
+#        data_table, "is_matched", np.full_like(data_table["is_matched"].to_numpy(), -1)
+#    )
+#
+#    out_dir = source_dir / "closure" / "tensordicts" / feature_mode
+#    out_dir.mkdir(parents=True, exist_ok=True)
+#    print("Closure tensordicts will be written to", out_dir)
+#
+#    to_tensordict(
+#        data_table,
+#        reco_table,
+#        columns=jet_columns,
+#        prefix=out_dir / "det_lvl",
+#        max_chunksize=100000,
+#        feature_mode=feature_mode,
+#    )
+#
+#    buffers.append(pa.memory_map(str(root_dir / "gen-matches.arrow")))
+#    gen_match_table = pa.ipc.open_file(buffers[-1]).read_all()
+#    buffers.append(pa.memory_map(str(root_dir / "misses.arrow")))
+#    gen_misses_table = pa.ipc.open_file(buffers[-1]).read_all()
+#    gen_table = pa.concat_tables((gen_match_table, gen_misses_table))
+#
+#    gen_table_data_like = replace_table_column(
+#        gen_table, "is_data", np.full_like(gen_table["is_data"].to_numpy(), True)
+#    )
+#    gen_table_data_like = replace_table_column(
+#        gen_table_data_like,
+#        "is_matched",
+#        np.full_like(gen_table["is_matched"].to_numpy(), -1),
+#    )
+#
+#    to_tensordict(
+#        gen_table_data_like,
+#        gen_table,
+#        columns=jet_columns,
+#        prefix=out_dir / "part_lvl",
+#        max_chunksize=100000,
+#        feature_mode=feature_mode,
+#    )
+
+
+def main(
+    root_dir,
+    sysvar,
+    feature_mode="angularities",
+    redo_preprocessing=True,
+    redo_datasets=False,
+):
+    if redo_preprocessing:
         print("Preprocessing data...")
         preprocess_data(
-            source_dir,
+            root_dir / "jets",
+            root_dir / "features" / feature_mode,
             "data.arrow",
+            feature_mode,
             is_data=True,
             is_matched=-1,
             pth_bin=-1,
         )
         print("Preprocessing embedding...")
-        preprocess_embedding(source_dir, sysvar)
+        preprocess_embedding(
+            root_dir / "jets",
+            root_dir / "features" / feature_mode,
+            sysvar,
+            feature_mode,
+        )
     if redo_datasets:
-        print("Making tensordict for ML datasets", str(sysvar), "...")
-        make_datasets_for_unfolding(source_dir, sysvar)
+        print("Making tensordict for ML datasets", str(sysvar), feature_mode, "...")
+        _, _ = make_datasets_for_unfolding(
+            root_dir / "features" / feature_mode,
+            root_dir / "features" / feature_mode / "tensordicts" / str(sysvar),
+            sysvar,
+            feature_mode,
+        )
 
 
 if __name__ == "__main__":
-    source_dir: str = "./datasets/STAR_pp200GeV_production_2012/clustered_jets"
-    for sys_var in SysVar:
-        main(source_dir, sys_var, redo_preprocessing=True)
+    import json
+
+    root_dir = Path("./datasets/STAR_pp200GeV_production_2012")
+
+    sys_var = SysVar.UNFOLDING_PRIOR_LIKE_DATA
+
+    cfg = {}
+    cfg_path = Path("./runtime-files/config.json")
+    if cfg_path.exists():
+        with cfg_path.open("r") as cfg_file:
+            cfg = json.load(cfg_file)
+
+    feature_mode = cfg.get("feature_mode", "angularities")
+    redo_preprocessing = cfg.get("redo_preprocessing", False)
+    redo_datasets = cfg.get("redo_datasets", True)
+    redo_closure_datasets = cfg.get("redo_closure_datasets", False)
+    if feature_mode not in FEATURE_MODES:
+        raise ValueError(
+            f"cfg['feature_mode'] must be one of {FEATURE_MODES}, got {feature_mode!r}"
+        )
+    print(
+        f"feature_mode={feature_mode} redo_preprocessing={redo_preprocessing} "
+        f"redo_datasets={redo_datasets} redo_closure_datasets={redo_closure_datasets}"
+    )
+
+    if sys_var is None:
+        for _sys_var in SysVar:
+            main(
+                root_dir,
+                _sys_var,
+                feature_mode=feature_mode,
+                redo_preprocessing=redo_preprocessing,
+                redo_datasets=redo_datasets,
+            )
+    else:
+        main(
+            root_dir,
+            sys_var,
+            feature_mode=feature_mode,
+            redo_preprocessing=redo_preprocessing,
+            redo_datasets=redo_datasets,
+        )
+
+    # if redo_closure_datasets:
+    #    print("Making closure-test tensordicts ...")
+    #    make_datasets_for_closure(source_dir, feature_mode=feature_mode)

@@ -1,9 +1,10 @@
 import marimo
 
-__generated_with = "0.20.4"
+__generated_with = "0.23.5"
 app = marimo.App(width="medium")
 
 with app.setup:
+    import json
     from pathlib import Path
 
     import numpy as np
@@ -14,6 +15,10 @@ with app.setup:
     import torch
 
     from systematics import SysVar, get_jet_pt_bins
+
+    with open("./runtime-files/config.json") as _cfg_file:
+        _cfg_setup = json.load(_cfg_file)
+    feature_mode = _cfg_setup["feature_mode"]
 
     common_vars = (
         "m",
@@ -45,7 +50,7 @@ with app.setup:
     }
 
     var_hist_ylabel = {
-        "pt": r"$\frac{1}{N_{jets}}\frac{dN_{jets}{dp_{\rm T, jet}} ((GeV/$c$)^{-1})$",
+        "pt": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{dp_{\rm T, jet}}\,(\mathrm{GeV}/c)^{-1}$",
         "ch_ang_k1_b0.5": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 0.5}}$ ",
         "ch_ang_k1_b1": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 1}}$",
         "ch_ang_k1_b2": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 2}}$",
@@ -219,11 +224,11 @@ def plot_profile(
             "errorbar",
             file_path=prefix_dir
             / str(SysVar.NONE)
-            / var_name
+            / feature_mode / var_name
             / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
             sys_err_path=prefix_dir
             / "sys_errors"
-            / var_name
+            / feature_mode / var_name
             / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
             color="blue",
             label="{SD}",
@@ -235,11 +240,11 @@ def plot_profile(
                     "errorbar",
                     file_path=prefix_dir
                     / str(SysVar.NONE)
-                    / var_name
+                    / feature_mode / var_name
                     / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
                     sys_err_path=prefix_dir
                     / "sys_errors"
-                    / var_name
+                    / feature_mode / var_name
                     / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
                     color="red",
                     label="{incl.}",
@@ -254,7 +259,7 @@ def plot_profile(
                         "plot",
                         file_path=prefix_dir
                         / mc
-                        / var_name
+                        / feature_mode / var_name
                         / f"prof_sd_vs_{x_var_name}_jpt{ijpt_true}.pt",
                         label="".join(("{", mc, "}")),
                         color="blue",
@@ -268,7 +273,7 @@ def plot_profile(
                         "plot",
                         file_path=prefix_dir
                         / mc
-                        / var_name
+                        / feature_mode / var_name
                         / f"prof_incl_vs_{x_var_name}_jpt{ijpt_true}.pt",
                         color="red",
                         **(mc_hist_styles[mc]),
@@ -315,8 +320,8 @@ def plot_profile(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = prefix_dir / "plots" / var_name
-        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_dir = prefix_dir / "plots" / feature_mode / var_name
+        fig_save_dir.mkdir(parents=True, exist_ok=True)
         fig_save_path = fig_save_dir / f"prof_ang_vs_{x_var_name}.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
@@ -403,11 +408,11 @@ def plot_hists(
             "errorbar",
             file_path=prefix_dir
             / str(SysVar.NONE)
-            / var_name
+            / feature_mode / var_name
             / f"hist_jpt{ijpt_true}.pt",
             sys_err_path=prefix_dir
             / "sys_errors"
-            / var_name
+            / feature_mode / var_name
             / f"hist_jpt{ijpt_true}.pt",
             label="inclusive",
             color="red",
@@ -421,7 +426,7 @@ def plot_hists(
                         "plot",
                         file_path=prefix_dir
                         / mc
-                        / var_name
+                        / feature_mode / var_name
                         / f"hist_jpt{ijpt_true}.pt",
                         label=mc,
                         color="red",
@@ -436,11 +441,11 @@ def plot_hists(
                     "errorbar",
                     file_path=prefix_dir
                     / str(SysVar.NONE)
-                    / f"sd_{var_name}"
+                    / feature_mode / f"sd_{var_name}"
                     / f"hist_jpt{ijpt_true}.pt",
                     sys_err_path=prefix_dir
                     / "sys_errors"
-                    / f"sd_{var_name}"
+                    / feature_mode / f"sd_{var_name}"
                     / f"hist_jpt{ijpt_true}.pt",
                     label="groomed",
                     color="blue",
@@ -455,7 +460,7 @@ def plot_hists(
                             "plot",
                             file_path=prefix_dir
                             / mc
-                            / f"sd_{var_name}"
+                            / feature_mode / f"sd_{var_name}"
                             / f"hist_jpt{ijpt_true}.pt",
                             label=mc,
                             color="blue",
@@ -490,8 +495,8 @@ def plot_hists(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = prefix_dir / "plots" / var_name
-        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_dir = prefix_dir / "plots" / feature_mode / var_name
+        fig_save_dir.mkdir(parents=True, exist_ok=True)
         fig_save_path = fig_save_dir / f"hist_{var_name}.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
@@ -588,21 +593,21 @@ def plot_ratio(
         ijpt += 1
 
         num_file_paths = (
-            prefix_dir / str(SysVar.NONE) / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
-            prefix_dir / "sys_errors" / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+            prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+            prefix_dir / "sys_errors" / feature_mode / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
         )
         den_file_paths = (
-            prefix_dir / str(SysVar.NONE) / var_name / f"hist_ang_jpt{ijpt_true}.pt",
-            prefix_dir / "sys_errors" / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+            prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+            prefix_dir / "sys_errors" / feature_mode / var_name / f"hist_ang_jpt{ijpt_true}.pt",
         )
         ratio_file_paths = (
             prefix_dir
             / str(SysVar.NONE)
-            / var_name
+            / feature_mode / var_name
             / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
             prefix_dir
             / "sys_errors"
-            / var_name
+            / feature_mode / var_name
             / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
         )
         ax_arts = plot_ratio_single(
@@ -619,15 +624,15 @@ def plot_ratio(
         if plot_mc:
             for mc in mc_labels:
                 num_file_paths = (
-                    prefix_dir / mc / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
+                    prefix_dir / mc / feature_mode / var_name / f"hist_sd_ang_jpt{ijpt_true}.pt",
                     None,
                 )
                 den_file_paths = (
-                    prefix_dir / mc / var_name / f"hist_ang_jpt{ijpt_true}.pt",
+                    prefix_dir / mc / feature_mode / var_name / f"hist_ang_jpt{ijpt_true}.pt",
                     None,
                 )
                 ratio_file_paths = (
-                    prefix_dir / mc / var_name / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
+                    prefix_dir / mc / feature_mode / var_name / f"ratio_incl_vs_sd_jpt{ijpt_true}.pt",
                     None,
                 )
                 ax_arts.update(
@@ -677,8 +682,8 @@ def plot_ratio(
     #    adjust_text(val)
 
     if save_figs:
-        fig_save_dir = prefix_dir / "plots" / var_name
-        fig_save_dir.mkdir(exist_ok=True)
+        fig_save_dir = prefix_dir / "plots" / feature_mode / var_name
+        fig_save_dir.mkdir(parents=True, exist_ok=True)
         fig_save_path = fig_save_dir / "ratio_incl_vs_hc.pdf"
         print("Saving figure to:", fig_save_path)
         fig.savefig(fig_save_path, bbox_inches="tight")
@@ -717,6 +722,11 @@ def _():
         for x_var_name in common_vars + (var_name,):
             plot_profile(var_name, x_var_name, save_figs=save_figs, plot_mc=plot_mc)
     plt.show()
+    return
+
+
+@app.cell
+def _():
     return
 
 

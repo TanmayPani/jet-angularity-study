@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.20.2"
+__generated_with = "0.23.5"
 app = marimo.App(width="columns")
 
 with app.setup:
@@ -28,6 +28,10 @@ with app.setup:
         "ch_ang_k1_b2",
         "ch_ang_k2_b0",
     )
+
+    with open("./runtime-files/config.json") as _cfg_file:
+        _cfg_setup = json.load(_cfg_file)
+    feature_mode = _cfg_setup["feature_mode"]
 
     sys_var = SysVar.NONE
 
@@ -191,7 +195,7 @@ def _():
 
 @app.cell
 def _():
-    _source_dir = "./datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
+    _source_dir = "./datasets/STAR_pp200GeV_production_2012/jets/embedding"
 
     if sys_var in {SysVar.NONE, SysVar.TOWER_ET_CORRECTION, SysVar.TRACK_EFFICIENCY}:
         _input_root_dir = os.path.join(_source_dir, str(sys_var))
@@ -246,14 +250,23 @@ def _(gen_table):
 
 @app.cell
 def _():
-    if sys_var in {
+    _prior_sysvars = {
+        SysVar.UNFOLDING_PRIOR_LIKE_DATA,
+        SysVar.UNFOLDING_PRIOR_HERWIG7,
+        SysVar.UNFOLDING_PRIOR_PYTHIA8,
+    }
+    _has_own_unfolding = {
         SysVar.TOWER_ET_CORRECTION,
         SysVar.TRACK_EFFICIENCY,
-        SysVar.UNFOLDING_PRIOR,
-    }:
-        _unf_wts_filename: str = f"outputs/unfolding_{str(sys_var)}/w_unfolding.npz"
-    else:
-        _unf_wts_filename: str = f"outputs/unfolding_{str(SysVar.NONE)}/w_unfolding.npz"
+    } | _prior_sysvars
+
+    _unf_dir = os.path.join(
+        "./datasets/STAR_pp200GeV_production_2012/features",
+        feature_mode,
+        "embedding",
+        str(sys_var if sys_var in _has_own_unfolding else SysVar.NONE),
+    )
+    _unf_wts_filename = os.path.join(_unf_dir, "w_unfolding.npz")
     print(f"Getting unfolded weights from {_unf_wts_filename}")
     _unf_weights_dict = np.load(_unf_wts_filename)
     _iteration = get_unfolding_iter(sys_var, 5)
@@ -261,13 +274,29 @@ def _():
         _unf_weights_dict[f"arr_{2 * _iteration}"], dtype=torch.float32
     )
 
-    if sys_var == SysVar.UNFOLDING_PRIOR:
-        _truth_weight_file = "outputs/omnisequential/omniseq-wts-iter2.npz"
-        print("Reading truth weights from:", _truth_weight_file)
-        _closure_wts = np.load(_truth_weight_file)
-        _truth_wt_key = list(_closure_wts.keys())[-1]
+    if sys_var in _prior_sysvars:
+        # Truth weights live in the prior-variant gen-side arrows (baked by
+        # omnisequential.py for LIKE_DATA, reverse_omnisequential.py for
+        # HERWIG7/PYTHIA8). Concatenate [gen-matches | misses] to match the
+        # row order of the gen_table used downstream.
+        _prior_root = os.path.join(
+            "./datasets/STAR_pp200GeV_production_2012/features",
+            feature_mode,
+            "embedding",
+            str(sys_var),
+        )
+        print("Reading truth weights from arrows under:", _prior_root)
+        _gm_buf = pa.memory_map(
+            os.path.join(_prior_root, "gen-matches.arrow"), "rb"
+        )
+        _mi_buf = pa.memory_map(os.path.join(_prior_root, "misses.arrow"), "rb")
+        _gm_truth = pa.ipc.open_file(_gm_buf).read_all()
+        _mi_truth = pa.ipc.open_file(_mi_buf).read_all()
         truth_weights = torch.as_tensor(
-            _closure_wts[_truth_wt_key], dtype=torch.float32
+            np.concatenate(
+                [_gm_truth["weight"].to_numpy(), _mi_truth["weight"].to_numpy()]
+            ),
+            dtype=torch.float32,
         )
     else:
         truth_weights = None
@@ -275,8 +304,8 @@ def _():
 
 
 @app.cell
-def _(bins, gen_table, truth_weights, unf_weights, mc_tables):
-    prefix = os.path.join("outputs", "histograms", str(sys_var))
+def _(bins, gen_table, mc_tables, truth_weights, unf_weights):
+    prefix = os.path.join("outputs", "histograms", str(sys_var), feature_mode)
 
     print("Data histograms will be saved to:", prefix)
 
@@ -301,7 +330,7 @@ def _(bins, gen_table, truth_weights, unf_weights, mc_tables):
         )
 
         for _mc_name, _mc_table, _mc_weights in mc_tables:
-            _mc_prefix = os.path.join("outputs", "histograms", _mc_name)
+            _mc_prefix = os.path.join("outputs", "histograms", _mc_name, feature_mode)
             print(f"{_mc_name} histograms will be saved to:", _mc_prefix)
 
             _mc_hist = histogram(_mc_table, bins, ("pt", _var), _mc_weights)
@@ -322,12 +351,11 @@ def _(bins, gen_table, truth_weights, unf_weights, mc_tables):
 
         del _hist, _truth_hist
         torch.cuda.empty_cache()
-
     return (prefix,)
 
 
 @app.cell
-def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
+def _(bins, gen_table, mc_tables, prefix, truth_weights, unf_weights):
     for _ang in angularities:
         _ang_prefix = os.path.join(prefix, _ang)
 
@@ -379,7 +407,7 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
         del _truth_hist_incl, _truth_hist_sd, _truth_hist
 
         for _mc_name, _mc_table, _mc_weights in mc_tables:
-            _mc_prefix = os.path.join("outputs", "histograms", _mc_name)
+            _mc_prefix = os.path.join("outputs", "histograms", _mc_name, feature_mode)
             _mc_hist = histogram(
                 _mc_table, bins, ("pt", _ang, f"sd_{_ang}"), _mc_weights
             )
@@ -432,7 +460,7 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
 
 
 @app.cell
-def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
+def _(bins, gen_table, mc_tables, prefix, truth_weights, unf_weights):
     for _ang in angularities:
         _ang_prefix = os.path.join(prefix, _ang)
         _bin_cols = (*common_vars, f"sd_{_ang}")
@@ -457,7 +485,7 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
             )
 
         for _mc_name, _mc_table, _mc_weights in mc_tables:
-            _mc_prefix = os.path.join("outputs", "histograms", _mc_name)
+            _mc_prefix = os.path.join("outputs", "histograms", _mc_name, feature_mode)
             _mc_prof = profile(_mc_table, bins, _bin_cols, _ang, _mc_weights)
             for _var in _bin_cols[1:]:
                 save_hist_2d(
@@ -475,7 +503,7 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
 
 
 @app.cell
-def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
+def _(bins, gen_table, mc_tables, prefix, truth_weights, unf_weights):
     for _ang in angularities:
         _ang_prefix = os.path.join(prefix, _ang)
         _bin_cols = (*common_vars, _ang)
@@ -502,7 +530,7 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
             )
 
         for _mc_name, _mc_table, _mc_weights in mc_tables:
-            _mc_prefix = os.path.join("outputs", "histograms", _mc_name)
+            _mc_prefix = os.path.join("outputs", "histograms", _mc_name, feature_mode)
             _mc_prof = profile(_mc_table, bins, _bin_cols, f"sd_{_ang}", _mc_weights)
 
             for _var in _bin_cols[1:]:
@@ -522,6 +550,85 @@ def _(bins, gen_table, prefix, truth_weights, unf_weights, mc_tables):
 
 @app.cell
 def _():
+    _closure_dir = "outputs/closure"
+    A_gen_table = None
+    A_reco_table = None
+    closure_gen_weights = None
+    closure_reco_weights = None
+    if os.path.exists(os.path.join(_closure_dir, "manifest.json")):
+        with open(os.path.join(_closure_dir, "manifest.json"), "r") as _f:
+            _manifest = json.load(_f)
+        _idx = np.load(os.path.join(_closure_dir, "indices.npz"))
+        _w_unfolding = np.load(os.path.join(_closure_dir, "w_unfolding.npz"))
+
+        _n_match = _manifest["n_match"]
+        _A_m = _idx["A_m"]
+        _A_mi = _idx["A_mi"]
+        _A_f = _idx["A_f"]
+
+        _src_dir = "./datasets/STAR_pp200GeV_production_2012/jets/embedding"
+        _root_dir = os.path.join(_src_dir, str(SysVar.NONE))
+
+        _bufs = []
+        _bufs.append(pa.memory_map(os.path.join(_root_dir, "gen-matches.arrow")))
+        _gm = pa.ipc.open_file(_bufs[-1]).read_all()
+        _bufs.append(pa.memory_map(os.path.join(_root_dir, "misses.arrow")))
+        _ms = pa.ipc.open_file(_bufs[-1]).read_all()
+        _bufs.append(pa.memory_map(os.path.join(_root_dir, "reco-matches.arrow")))
+        _rm = pa.ipc.open_file(_bufs[-1]).read_all()
+        _bufs.append(pa.memory_map(os.path.join(_root_dir, "fakes.arrow")))
+        _fk = pa.ipc.open_file(_bufs[-1]).read_all()
+
+        _gen_full = pa.concat_tables((_gm, _ms))
+        _reco_full = pa.concat_tables((_rm, _fk))
+
+        _A_gen_rows = np.concatenate([_A_m, _n_match + _A_mi]).astype(np.int64)
+        _A_reco_rows = np.concatenate([_A_m, _n_match + _A_f]).astype(np.int64)
+
+        A_gen_table = _gen_full.take(_A_gen_rows)
+        A_reco_table = _reco_full.take(_A_reco_rows)
+
+        _n_iter = _manifest["num_iterations"]
+        _gen_key = f"arr_{2 * _n_iter}"
+        _reco_key = f"arr_{2 * _n_iter + 1}"
+        closure_gen_weights = torch.as_tensor(
+            _w_unfolding[_gen_key], dtype=torch.float32
+        )
+        closure_reco_weights = torch.as_tensor(
+            _w_unfolding[_reco_key], dtype=torch.float32
+        )
+
+        print(
+            f"Closure: A_gen {len(A_gen_table)} rows, "
+            f"A_reco {len(A_reco_table)} rows; "
+            f"gen weights {tuple(closure_gen_weights.shape)}, "
+            f"reco weights {tuple(closure_reco_weights.shape)}"
+        )
+    else:
+        print("No closure manifest at", _closure_dir, "- skipping closure plots")
+    return A_gen_table, A_reco_table, closure_gen_weights, closure_reco_weights
+
+
+@app.cell
+def _(
+    A_gen_table,
+    A_reco_table,
+    bins,
+    closure_gen_weights,
+    closure_reco_weights,
+):
+    _prefix = os.path.join("outputs", "histograms", "closure", feature_mode)
+    for _var in (*common_vars[1:], *angularities):
+        _gen_truth = histogram(A_gen_table, bins, ("pt", _var), None)
+        _gen_unf = histogram(A_gen_table, bins, ("pt", _var), closure_gen_weights)
+        _reco_unf = histogram(A_reco_table, bins, ("pt", _var), closure_reco_weights)
+        _var_prefix = os.path.join(_prefix, _var)
+        save_hist_2d(_gen_unf, prefix=_var_prefix, fname_prefix="hist_gen_closure",
+                     batched=True, true_hist=_gen_truth)
+        save_hist_2d(_reco_unf, prefix=_var_prefix, fname_prefix="hist_reco_closure",
+                     batched=True, true_hist=_gen_truth)
+        del _gen_truth, _gen_unf, _reco_unf
+    torch.cuda.empty_cache()
     return
 
 
