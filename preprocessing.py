@@ -161,7 +161,13 @@ def get_softdrop_groomed_jets(constituents, jet_def, **kwargs):
 
 @nb.jit(nopython=True)
 def _build_ang_sums_sparse(
-    jets, constits, bin_idx_builder, ang_sums_builder, count_builder
+    jets,
+    constits,
+    bin_idx_builder,
+    ang_sums_builder,
+    count_builder,
+    bin_idx_builder_neutral,
+    count_builder_neutral,
 ):
     n_pt = con_pt_bins.shape[0] - 1
     n_dr = con_dr_bins.shape[0] - 1
@@ -173,27 +179,34 @@ def _build_ang_sums_sparse(
     #   3: sum(pT_i * dR^2)   -> k=1, b=2    (thrust)
     #   4: sum(pT_i^2)        -> k=2, b=0    (p_T^D^2)
     # To recover angularity: sum_bins(channel) / (pT_jet^kappa * jet_r^beta)
+    # jet_count is the per-cell CHARGED count; jet_count_neutral the NEUTRAL count
+    # (charge == 0). The two feed the two channels of the bin-image input.
     jet_buf = np.zeros((n_pt * n_dr, 5), dtype=np.float32)
     jet_count = np.zeros((n_pt * n_dr,), dtype=np.int32)
+    jet_count_neutral = np.zeros((n_pt * n_dr,), dtype=np.int32)
     for ijet in range(len(jets)):
         for cell in range(n_pt * n_dr):
             jet_count[cell] = 0
+            jet_count_neutral[cell] = 0
             for ch in range(5):
                 jet_buf[cell, ch] = np.float32(0.0)
         for iconstit, constit in enumerate(constits[ijet]):
+            dr = jets[ijet].deltaR(constit)
+            dr_bin = np.searchsorted(con_dr_bins, dr) - 1
+            pt_bin = np.searchsorted(con_pt_bins, constit.pt) - 1
+            if not (0 <= pt_bin < n_pt and 0 <= dr_bin < n_dr):
+                continue
+            cell = pt_bin * n_dr + dr_bin
             if constits.charge[ijet][iconstit] != 0:
-                dr = jets[ijet].deltaR(constit)
-                dr_bin = np.searchsorted(con_dr_bins, dr) - 1
-                pt_bin = np.searchsorted(con_pt_bins, constit.pt) - 1
-                if 0 <= pt_bin < n_pt and 0 <= dr_bin < n_dr:
-                    cell = pt_bin * n_dr + dr_bin
-                    jet_count[cell] += 1
-                    cpt = constit.pt
-                    jet_buf[cell, 0] += cpt
-                    jet_buf[cell, 1] += cpt * np.sqrt(dr)
-                    jet_buf[cell, 2] += cpt * dr
-                    jet_buf[cell, 3] += cpt * dr * dr
-                    jet_buf[cell, 4] += cpt * cpt
+                jet_count[cell] += 1
+                cpt = constit.pt
+                jet_buf[cell, 0] += cpt
+                jet_buf[cell, 1] += cpt * np.sqrt(dr)
+                jet_buf[cell, 2] += cpt * dr
+                jet_buf[cell, 3] += cpt * dr * dr
+                jet_buf[cell, 4] += cpt * cpt
+            else:
+                jet_count_neutral[cell] += 1
         bin_idx_builder.begin_list()
         ang_sums_builder.begin_list()
         count_builder.begin_list()
@@ -206,17 +219,45 @@ def _build_ang_sums_sparse(
         bin_idx_builder.end_list()
         ang_sums_builder.end_list()
         count_builder.end_list()
-    return bin_idx_builder, ang_sums_builder, count_builder
+        bin_idx_builder_neutral.begin_list()
+        count_builder_neutral.begin_list()
+        for cell in range(n_pt * n_dr):
+            if jet_count_neutral[cell] > 0:
+                bin_idx_builder_neutral.integer(cell)
+                count_builder_neutral.integer(jet_count_neutral[cell])
+        bin_idx_builder_neutral.end_list()
+        count_builder_neutral.end_list()
+    return (
+        bin_idx_builder,
+        ang_sums_builder,
+        count_builder,
+        bin_idx_builder_neutral,
+        count_builder_neutral,
+    )
 
 
 def get_con_pt_dr_bins_sparse(jets, constituents):
-    bin_idx_builder, ang_sums_builder, count_builder = _build_ang_sums_sparse(
-        jets, constituents, ak.ArrayBuilder(), ak.ArrayBuilder(), ak.ArrayBuilder()
+    (
+        bin_idx_builder,
+        ang_sums_builder,
+        count_builder,
+        bin_idx_builder_neutral,
+        count_builder_neutral,
+    ) = _build_ang_sums_sparse(
+        jets,
+        constituents,
+        ak.ArrayBuilder(),
+        ak.ArrayBuilder(),
+        ak.ArrayBuilder(),
+        ak.ArrayBuilder(),
+        ak.ArrayBuilder(),
     )
 
     jets["bin_index"] = bin_idx_builder.snapshot()
     jets["bin_count"] = count_builder.snapshot()
     jets["bin_sum_wts"] = ang_sums_builder.snapshot()
+    jets["bin_index_neutral"] = bin_idx_builder_neutral.snapshot()
+    jets["bin_count_neutral"] = count_builder_neutral.snapshot()
 
     return jets
 
@@ -289,11 +330,15 @@ def process_table(table, feature_mode, **extra_fields):
         generate_bitmasks=True,
     )
     jets, constituents = to_jet_and_consitit_vectors(ak_array)
-    sd_jets, sd_constituents = get_softdrop_groomed_jets(
-        constituents,
-        fj.JetDefinition(fj.antikt_algorithm, jet_r, fj.E_scheme),
-        symmetry_cut=0.2,
-        R0=jet_r,
+    sd_jets, sd_constituents = (
+        get_softdrop_groomed_jets(
+            constituents,
+            fj.JetDefinition(fj.antikt_algorithm, jet_r, fj.E_scheme),
+            symmetry_cut=0.2,
+            R0=jet_r,
+        )
+        if feature_mode != "bin_counts"
+        else (None, None)
     )
 
     for coord in ("pt", "eta", "phi"):
@@ -303,7 +348,7 @@ def process_table(table, feature_mode, **extra_fields):
     match feature_mode:
         case "bin_counts":
             jets = get_con_pt_dr_bins_sparse(jets, constituents)
-            sd_jets = get_con_pt_dr_bins_sparse(sd_jets, sd_constituents)
+            # sd_jets = get_con_pt_dr_bins_sparse(sd_jets, sd_constituents)
         case "angularities":
             jets = calculate_angularities(jets, constituents)
             sd_jets = calculate_angularities(sd_jets, sd_constituents)
@@ -317,9 +362,10 @@ def process_table(table, feature_mode, **extra_fields):
             )
 
     out_dict = {key: pa.array(getattr(jets, key)) for key in jets.fields}
-    for key in sd_jets.fields:
-        # print(key)
-        out_dict[f"sd_{key}"] = pa.array(getattr(sd_jets, key))
+    if sd_jets is not None:
+        for key in sd_jets.fields:
+            # print(key)
+            out_dict[f"sd_{key}"] = pa.array(getattr(sd_jets, key))
 
     if len(extra_fields) > 0:
         print("------> Adding extra fields:", extra_fields)
@@ -352,6 +398,33 @@ def _densify_bin_counts(chunk):
     return torch.from_numpy(out)
 
 
+def _densify_bin_image(chunk):
+    """Sparse (charged, neutral) per-cell counts -> dense (N, 2, N_PT, N_DR).
+
+    Channel 0 is the charged constituent count (`bin_index`/`bin_count`), channel
+    1 the neutral count (`bin_index_neutral`/`bin_count_neutral`). The flat cell
+    index is `pt_bin * N_DR + dr_bin`, so reshaping the 81-vector to
+    (N_PT, N_DR) places pT along the rows and dR along the columns.
+    """
+    ch_idx = chunk.column("bin_index").to_pylist()
+    ch_cnt = chunk.column("bin_count").to_pylist()
+    ne_idx = chunk.column("bin_index_neutral").to_pylist()
+    ne_cnt = chunk.column("bin_count_neutral").to_pylist()
+    n = len(ch_idx)
+    # Per-cell constituent counts are small non-negative integers (observed max 8),
+    # so store the (2,9,9) bin image as uint8: the part_lvl memmap is 18.8 GB in
+    # float32 but only 4.7 GB in uint8 -> it stays in page cache instead of being
+    # re-read from disk every undersampled epoch. The training/inference loop casts
+    # the gathered batch to the compute dtype on-device (omnitrain._input_to_device).
+    out = np.zeros((n, 2, N_BINS), dtype=np.uint8)
+    for i in range(n):
+        if ch_idx[i]:
+            out[i, 0, ch_idx[i]] = ch_cnt[i]
+        if ne_idx[i]:
+            out[i, 1, ne_idx[i]] = ne_cnt[i]
+    return torch.from_numpy(out.reshape(n, 2, N_PT, N_DR))
+
+
 def to_tensordict(
     data_like,
     sim_like,
@@ -378,6 +451,9 @@ def to_tensordict(
     # separate sub-table and densify per chunk. The jet (scalar) columns iterate via
     # a fast `to_numpy` + np.stack path — both yield (chunk_size, k) float32 tensors
     # that get concatenated for the combined mode.
+    # bin_counts is now a 2-channel (charged, neutral) 9x9 "image" fed to a CNN;
+    # combined keeps the flat single-channel charged bin block.
+    use_bin_image = feature_mode == "bin_counts"
     if feature_mode == "bin_counts":
         jet_input_columns: tuple[str, ...] = ()
         use_bin_block = True
@@ -399,10 +475,14 @@ def to_tensordict(
         use_bin_block = False
         n_features = len(jet_input_columns)
 
+    input_shape = (2, N_PT, N_DR) if use_bin_image else (n_features,)
+    # The pure bin_counts image is small integer counts -> uint8 (see
+    # _densify_bin_image); the combined/angularity modes mix in float features.
+    input_dtype = torch.uint8 if use_bin_image else torch.float32
     tdict = (
         TensorDict(
             dict(
-                input=torch.zeros((n_features,), dtype=torch.float32),
+                input=torch.zeros(input_shape, dtype=input_dtype),
                 target=torch.zeros((), dtype=torch.float32),
                 weight=torch.ones((), dtype=torch.float32),
                 is_data=torch.zeros((), dtype=torch.bool),
@@ -416,7 +496,12 @@ def to_tensordict(
     )
 
     jet_table = table.select(list(jet_input_columns)) if jet_input_columns else None
-    bin_table = table.select(["bin_index", "bin_count"]) if use_bin_block else None
+    bin_columns = (
+        ["bin_index", "bin_count", "bin_index_neutral", "bin_count_neutral"]
+        if use_bin_image
+        else ["bin_index", "bin_count"]
+    )
+    bin_table = table.select(bin_columns) if use_bin_block else None
     _target = torch.as_tensor(target, dtype=torch.float32)
     _weight = torch.as_tensor(table["weight"].to_numpy(), dtype=torch.float32)
     _is_data = torch.as_tensor(table["is_data"].to_numpy(), dtype=torch.bool)
@@ -453,7 +538,11 @@ def to_tensordict(
             ]
             parts.append(torch.from_numpy(np.stack(cols, axis=-1)))
         if bin_batches is not None:
-            parts.append(_densify_bin_counts(bin_batches[batch_idx]))
+            parts.append(
+                _densify_bin_image(bin_batches[batch_idx])
+                if use_bin_image
+                else _densify_bin_counts(bin_batches[batch_idx])
+            )
         chunk_size = parts[0].shape[0]
         input_tensor = parts[0] if len(parts) == 1 else torch.cat(parts, dim=-1)
 
@@ -536,20 +625,42 @@ def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
 
     buffers = []
 
+    # The embedding tree for a sysvar is OPTIONAL input — e.g. the PYTHIA8 prior
+    # may not be produced yet. Skip gracefully (matching preprocess_embedding /
+    # the embedding-is-optional convention) so a top-level `for sys_var in SysVar`
+    # loop can run before every variation has been clustered/reweighted, and so
+    # no script makes PYTHIA8 (or any unproduced variant) compulsory.
+    _embed_dir = input_dir / "embedding" / str(sysvar)
+    if not (_embed_dir / "reco-matches.arrow").exists():
+        print(
+            f"[make_datasets_for_unfolding] no embedding arrows at {_embed_dir}; "
+            f"skipping {sysvar}. Produce them first (cluster_embedding.py + "
+            f"preprocessing; prior variants also need omnisequential.py / "
+            f"reverse_omnisequential.py)."
+        )
+        return None, None
+
+    # Only LIKE_DATA stays a closure test (pseudo-data = reweighted reco vs
+    # nominal sim) -> its residual non-closure becomes the "non-closure"
+    # systematic. HERWIG7 / PYTHIA8 are now genuine model/prior-dependence
+    # systematics: they unfold the REAL data using their own reweighted
+    # embedding as the simulation/prior, so they take the normal `else` branch
+    # below (data = data.arrow, sim = embedding/<sysvar>/) and produce an
+    # alternate unfolded *data* spectrum, not a closure ratio.
     _PRIOR_VARIANTS = (
         SysVar.UNFOLDING_PRIOR_LIKE_DATA,  # TODO: Make sure paths are set properly for .arrow outputs of omnisequential.py
-        SysVar.UNFOLDING_PRIOR_HERWIG7,
-        SysVar.UNFOLDING_PRIOR_PYTHIA8,
+        # --- old: HERWIG7/PYTHIA8 also ran the pseudo-data closure path; they
+        # are now model-dependence variations unfolding real data instead. ---
+        # SysVar.UNFOLDING_PRIOR_HERWIG7,
+        # SysVar.UNFOLDING_PRIOR_PYTHIA8,
     )
 
     if sysvar in _PRIOR_VARIANTS:
-        # Prior-systematic closure variants: the "data" side is reco-level
-        # pseudo-data (reweighted reco-matches + fakes), the "sim" side stays
-        # nominal so the closure test is meaningful. omnisequential.py
-        # (LIKE_DATA) and reverse_omnisequential.py (HERWIG7 / PYTHIA8) have
-        # already baked the reweighted weights into
-        # embedding/<sysvar>/{reco-matches,fakes}.arrow, so all three travel
-        # the same path here.
+        # Prior-systematic closure variant (LIKE_DATA only): the "data" side is
+        # reco-level pseudo-data (reweighted reco-matches + fakes), the "sim"
+        # side stays nominal so the closure test is meaningful.
+        # omnisequential.py has already baked the reweighted weights into
+        # embedding/<sysvar>/{reco-matches,fakes}.arrow.
 
         embedding_input_path = input_dir / "embedding" / str(SysVar.NONE)
         buffers.append(
@@ -723,17 +834,11 @@ def main(
 
 
 if __name__ == "__main__":
-    import json
+    from config import load_config
 
-    root_dir = Path("./datasets/STAR_pp200GeV_production_2012")
-
-    sys_var = SysVar.UNFOLDING_PRIOR_LIKE_DATA
-
-    cfg = {}
-    cfg_path = Path("./runtime-files/config.json")
-    if cfg_path.exists():
-        with cfg_path.open("r") as cfg_file:
-            cfg = json.load(cfg_file)
+    cfg = load_config()
+    root_dir = cfg.dataset_root
+    sys_var = cfg.sys_var
 
     feature_mode = cfg.get("feature_mode", "angularities")
     redo_preprocessing = cfg.get("redo_preprocessing", False)

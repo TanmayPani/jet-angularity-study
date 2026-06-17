@@ -21,6 +21,15 @@ _*
 slides/
 datasets/
 
+# Credentials / secrets (never commit)
+client_secret_*.json
+token.json
+*.credentials.json
+
+# Tooling caches
+.serena/
+.gdrive_cache/
+
 # Virtual environments
 .venv
 #uv.lock

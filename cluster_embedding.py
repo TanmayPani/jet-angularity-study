@@ -27,8 +27,14 @@ from cluster_data import (
 )
 from systematics import SysVar
 
+from gdrive_helper import GDrivePath
+
 bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
-data_folder_path: str = "/run/media/tanmaypani/Samsung-1tb/data/Pythia6Embedding_pp200_production_2012_P12id_SL12d_20235003_MuToTree20250123"
+
+root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
+data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+
+
 output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
 
 pt_hat_bins = ["11", "15", "20", "25", "35", "45", "55", "infty"]
@@ -302,6 +308,7 @@ def worker(
     con_kt_min=None,
     do_test=False,
     sys_var_type=SysVar.NONE,
+    is_gdrive=False,
 ):
     if not do_test:
         sys.stdout = StreamToLogger(
@@ -347,65 +354,132 @@ def worker(
     print(f"Writing fake jets at reco level to: {output_dir}/fakes.arrow")
 
     iBatch = 0
-    for startFile in range(0, len(goodRunFiles), nFilesPerBatch):
-        iBatch += 1
-        endFile = startFile + nFilesPerBatch
-        events = uproot.concatenate(goodRunFiles[startFile:endFile])
-        if maxEventsPerBatch >= 0:
-            events = events[:maxEventsPerBatch]
-        print(
-            f"Processing batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
-        )
+    if is_gdrive:
+        from gdrive_helper import GdriveBatchPrefetcher
 
-        (
-            gen_match_record_batch,
-            reco_match_record_batch,
-            miss_record_batch,
-            fake_record_batch,
-        ) = cluster_batch(
-            events,
-            jetDefinition,
-            batch_weight=sample_weight,
-            max_jet_pt=max_jet_pt,
-            sys_var_type=sys_var_type,
-            iseed=iBatch,
-        )
-        print(
-            f"Clustered batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
-        )
-        genMatchWriter.write(gen_match_record_batch)
-        recoMatchWriter.write(reco_match_record_batch)
-        missWriter.write(miss_record_batch)
-        fakeWriter.write(fake_record_batch)
-        print(
-            f"Wrote batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
-        )
-        if iBatch == 2 * maxNBatches - 1:
-            break
-        # return False
-    print(f"Starting on the bad runs for slot {slotId}")
-    for startFile in range(0, len(badRunFiles), nFilesPerBatch):
-        iBatch += 1
-        endFile = startFile + nFilesPerBatch
-        events = uproot.concatenate(badRunFiles[startFile:endFile])
-        if maxEventsPerBatch >= 0:
-            events = events[:maxEventsPerBatch]
-        print(
-            f"Processing batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
-        )
+        prefetcher_good = GdriveBatchPrefetcher(goodRunFiles, nFilesPerBatch)
+        for batch_local_files in prefetcher_good:
+            iBatch += 1
+            if len(batch_local_files) == 0:
+                continue
+            events = uproot.concatenate(batch_local_files, num_workers=4)
+            if maxEventsPerBatch >= 0:
+                events = events[:maxEventsPerBatch]
+            print(f"Processing batch [{iBatch}/{nBatches}], with {len(events)} events")
 
-        miss_record_batch = cluster_batch(
-            events,
-            jetDefinition,
-            is_good_run=False,
-            batch_weight=sample_weight,
-            max_jet_pt=max_jet_pt,
-            sys_var_type=sys_var_type,
-        )
+            (
+                gen_match_record_batch,
+                reco_match_record_batch,
+                miss_record_batch,
+                fake_record_batch,
+            ) = cluster_batch(
+                events,
+                jetDefinition,
+                batch_weight=sample_weight,
+                max_jet_pt=max_jet_pt,
+                sys_var_type=sys_var_type,
+                iseed=iBatch,
+            )
+            print(f"Clustered batch [{iBatch}/{nBatches}], with {len(events)} events")
+            genMatchWriter.write(gen_match_record_batch)
+            recoMatchWriter.write(reco_match_record_batch)
+            missWriter.write(miss_record_batch)
+            fakeWriter.write(fake_record_batch)
+            print(f"Wrote batch [{iBatch}/{nBatches}], with {len(events)} events")
 
-        missWriter.write(miss_record_batch)
-        if iBatch == 2 * maxNBatches:
-            break
+            for f in batch_local_files:
+                os.remove(f.split(":")[0])
+
+            if iBatch == 2 * maxNBatches - 1:
+                break
+
+        print(f"Starting on the bad runs for slot {slotId}")
+        prefetcher_bad = GdriveBatchPrefetcher(badRunFiles, nFilesPerBatch)
+        for batch_local_files in prefetcher_bad:
+            iBatch += 1
+            if len(batch_local_files) == 0:
+                continue
+            events = uproot.concatenate(batch_local_files, num_workers=4)
+            if maxEventsPerBatch >= 0:
+                events = events[:maxEventsPerBatch]
+            print(f"Processing batch [{iBatch}/{nBatches}], with {len(events)} events")
+
+            miss_record_batch = cluster_batch(
+                events,
+                jetDefinition,
+                is_good_run=False,
+                batch_weight=sample_weight,
+                max_jet_pt=max_jet_pt,
+                sys_var_type=sys_var_type,
+            )
+
+            missWriter.write(miss_record_batch)
+
+            for f in batch_local_files:
+                os.remove(f.split(":")[0])
+
+            if iBatch == 2 * maxNBatches:
+                break
+    else:
+        for startFile in range(0, len(goodRunFiles), nFilesPerBatch):
+            iBatch += 1
+            endFile = startFile + nFilesPerBatch
+            events = uproot.concatenate(goodRunFiles[startFile:endFile], num_workers=4)
+            if maxEventsPerBatch >= 0:
+                events = events[:maxEventsPerBatch]
+            print(
+                f"Processing batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
+            )
+
+            (
+                gen_match_record_batch,
+                reco_match_record_batch,
+                miss_record_batch,
+                fake_record_batch,
+            ) = cluster_batch(
+                events,
+                jetDefinition,
+                batch_weight=sample_weight,
+                max_jet_pt=max_jet_pt,
+                sys_var_type=sys_var_type,
+                iseed=iBatch,
+            )
+            print(
+                f"Clustered batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
+            )
+            genMatchWriter.write(gen_match_record_batch)
+            recoMatchWriter.write(reco_match_record_batch)
+            missWriter.write(miss_record_batch)
+            fakeWriter.write(fake_record_batch)
+            print(
+                f"Wrote batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
+            )
+            if iBatch == 2 * maxNBatches - 1:
+                break
+
+        print(f"Starting on the bad runs for slot {slotId}")
+        for startFile in range(0, len(badRunFiles), nFilesPerBatch):
+            iBatch += 1
+            endFile = startFile + nFilesPerBatch
+            events = uproot.concatenate(badRunFiles[startFile:endFile], num_workers=4)
+            if maxEventsPerBatch >= 0:
+                events = events[:maxEventsPerBatch]
+            print(
+                f"Processing batch [{iBatch}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
+            )
+
+            miss_record_batch = cluster_batch(
+                events,
+                jetDefinition,
+                is_good_run=False,
+                batch_weight=sample_weight,
+                max_jet_pt=max_jet_pt,
+                sys_var_type=sys_var_type,
+            )
+
+            missWriter.write(miss_record_batch)
+            if iBatch == 2 * maxNBatches:
+                break
 
     genMatchWriter.close()
     recoMatchWriter.close()
@@ -434,12 +508,16 @@ if __name__ == "__main__":
     )
     with ProcessPoolExecutor() as executor:
         futures = []
+        is_gdrive = isinstance(data_folder_path, GDrivePath) or (
+            "/" not in str(data_folder_path) and len(str(data_folder_path)) > 20
+        )
         for ipth in ptHatBinsToRun:
             goodRunFiles, badRunFiles = read_input_files(
                 data_folder_path,
                 bad_run_list,
                 glob_expr=f"*{pt_hat_bins[ipth]}_{pt_hat_bins[ipth + 1]}_*/tree/*.tree.root",
                 run_number_token_id=3,
+                is_gdrive=is_gdrive,
             )
 
             futures.append(
@@ -453,6 +531,7 @@ if __name__ == "__main__":
                     max_jet_pt=3.0 * pt_hat_low_edges[ipth],
                     do_test=do_test,
                     sys_var_type=sys_var_type,
+                    is_gdrive=is_gdrive,
                 )
             )
         # wait(futures)

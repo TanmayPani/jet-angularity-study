@@ -1,16 +1,62 @@
 {
-  "num_replicas": 20,
+  "num_replicas": 40,
   "num_data_subsample": 500000,
-  "batch_size": 5000,
+  "batch_size": 10000,
   "train_size": 0.75,
   "num_iterations": 3,
-  "num_epochs": 30,
+  "num_epochs": 20,
+  "valid_every": 1,
   "dataseed": 0,
   "modelseed": 0,
-  "feature_mode": "angularities",
-  "input_transform": "z_norm",
+  "feature_mode": "bin_counts",
+  "input_transform": "log1p_per_channel_z_norm",
   "redo_preprocessing": false,
   "redo_datasets": true,
   "redo_closure_datasets": false,
+  "save_model_states": true,
+  "resume": false,
+  "resume_from_iter": null,
+  "keep_last_checkpoint_only": true,
+  "compile_forward": true,
+  "compile_kwargs": {},
+  "barlow_threshold": 1.0,
+  "barlow_threshold_prior": 0.0,
+  "dataset_root": "./datasets/STAR_pp200GeV_production_2012",
+  "device": "auto",
+  "sys_var": "unf_prior_like_data",
+  "training": {
+    "hidden_layers": [
+      256,
+      256,
+      256
+    ],
+    "dropout_prob": 0.2,
+    "early_stopping_patience": 5,
+    "reweight_clamp": {
+      "clamp_min": 0.1,
+      "clamp_max": 10.0
+    },
+    "cnn_channels": [
+      16,
+      32,
+      48,
+      64
+    ],
+    "cnn_collapse": true,
+    "lr_schedule": {
+      "policy": "ReduceLROnPlateau",
+      "factor": 0.5,
+      "patience": 3,
+      "threshold": 0.001,
+      "min_lr": 1E-5
+    },
+    "predict_replica_chunk": null,
+    "optimizer": {
+      "lr": 0.001,
+      "eps": 1E-8,
+      "weight_decay": 0.01,
+      "decoupled_weight_decay": true
+    }
+  },
   "filename_stub_fmt": "nreplicas{}_sub{}_batch_size{}_niter{}_nepochs{}_trainsplit{}_dataseed{}_modelseed{}"
 }

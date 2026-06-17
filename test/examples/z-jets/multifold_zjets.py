@@ -11,10 +11,10 @@ from torch.nn.functional import binary_cross_entropy_with_logits, sigmoid
 
 from tensordict import TensorDict
 
-from churten.stateless import StatelessModule
-from churten.optimizer import Adam
-from churten.utils.nn.archs import MLP
-from churten.callbacks import Checkpoint, EarlyStopping
+from torchstrap.stateless import StatelessModule
+from torchstrap.optimizer import Adam
+from torchstrap.utils.nn.archs import MLP
+from torchstrap.callbacks import Checkpoint, EarlyStopping
 
 from utils.data import TensorDictDataset
 from utils.data import train_test_multi_loaders, reweight_inference_loaders

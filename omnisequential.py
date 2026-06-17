@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.9"
 app = marimo.App(width="columns")
 
 with app.setup:
@@ -22,9 +22,11 @@ with app.setup:
 
     from systematics import SysVar
 
-    with open("./runtime-files/config.json") as _cfg_file:
-        _cfg_setup = json.load(_cfg_file)
+    from config import load_config
+
+    _cfg_setup = load_config()
     feature_mode = _cfg_setup["feature_mode"]
+    dataset_root = str(_cfg_setup.dataset_root)
 
     GP_SEED = 0
 
@@ -153,9 +155,7 @@ def weight_summary(w):
 
 
 @app.function
-def propagate_values(
-    x1, y1, x2, estimator=None, num_prediction_batches=None, y1_err=None
-):
+def propagate_values(x1, y1, x2, estimator=None, num_prediction_batches=None, y1_err=None):
     x1 = np.asarray(x1)
     x2 = np.asarray(x2)
     if x1.ndim == 1:
@@ -299,9 +299,7 @@ def plot_ratios(
             if ratio is None:
                 ratio = count1 / count2
                 if error1 is not None and error2 is not None:
-                    ratio_err = ratio * np.sqrt(
-                        (error1 / count1) ** 2 + (error2 / count2) ** 2
-                    )
+                    ratio_err = ratio * np.sqrt((error1 / count1) ** 2 + (error2 / count2) ** 2)
             # print(ratio, ratio_err)
             plot_hist(
                 axs[1],
@@ -325,9 +323,16 @@ def plot_ratios(
 @app.cell
 def _():
     _do_use_gen_misses: bool = True
-    _source_dir = os.path.join(
-        "./datasets/STAR_pp200GeV_production_2012/features", feature_mode
-    )
+    # The GP reweighting histograms the scalar jet observables in `jet_columns`
+    # (angularities + kinematics). Those columns only exist in the `angularities`
+    # embedding — the `bin_counts` arrows carry bin_index/bin_count/... instead.
+    # So ALWAYS read the reweighting observables from the `angularities`
+    # embedding; the resulting per-jet `weight` is baked onto the configured
+    # `feature_mode`'s arrows in the writing cell (same jets, same row order, so
+    # the weights are row-aligned). When feature_mode == "angularities" this is
+    # identical to the old behavior.
+    _obs_feature_mode = "angularities"
+    _source_dir = os.path.join(dataset_root, "features", _obs_feature_mode)
     _emb_dir = os.path.join(_source_dir, "embedding", str(SysVar.NONE))
 
     _gen_match_buffer = pa.memory_map(os.path.join(_emb_dir, "gen-matches.arrow"), "rb")
@@ -336,9 +341,7 @@ def _():
     _gen_miss_buffer = pa.memory_map(os.path.join(_emb_dir, "misses.arrow"), "rb")
     gen_miss_table = pa.ipc.open_file(_gen_miss_buffer).read_all()
 
-    _reco_match_buffer = pa.memory_map(
-        os.path.join(_emb_dir, "reco-matches.arrow"), "rb"
-    )
+    _reco_match_buffer = pa.memory_map(os.path.join(_emb_dir, "reco-matches.arrow"), "rb")
     reco_match_table = pa.ipc.open_file(_reco_match_buffer).read_all()
 
     _reco_fake_buffer = pa.memory_map(os.path.join(_emb_dir, "fakes.arrow"), "rb")
@@ -387,14 +390,10 @@ def _():
     print(gen_table.column_names)
     return (
         data_table,
-        gen_match_table,
-        gen_miss_table,
         gen_table,
         n_data,
         n_gen_matches,
         n_reco_matches,
-        reco_fake_table,
-        reco_match_table,
         reco_table,
         sum_w_gen_orig,
         sum_w_reco_orig,
@@ -429,9 +428,7 @@ def _(data_table):
             _bins_updated = True
             print("Calculating binning for", _col)
             bins[_col] = bayesian_blocks(
-                torch.as_tensor(
-                    data_table[_col].to_numpy(), dtype=torch.float64, device="cuda"
-                ),
+                torch.as_tensor(data_table[_col].to_numpy(), dtype=torch.float64, device="cuda"),
                 p0=_p0,
                 ranges=col_hist_args[_col]["range"],
                 undersample=_undersample,
@@ -490,9 +487,7 @@ def _(bins, data_table, gen_table, n_data, reco_table):
             return_binned_data=True,
         )
 
-        reco_arr[_col] = torch.as_tensor(
-            reco_table[_col].to_numpy(), dtype=torch.float64
-        )
+        reco_arr[_col] = torch.as_tensor(reco_table[_col].to_numpy(), dtype=torch.float64)
 
         _reco_hist, binned_reco[_col] = Histogram.create(
             (reco_arr[_col],),
@@ -648,9 +643,7 @@ def _(
                 # features, hists[max_chi2_var]["ratio"],
                 reco_arr[max_chi2_var],
                 num_prediction_batches=40,
-                y1_err=hists[max_chi2_var]["ratio_err"][
-                    hists[max_chi2_var]["chi2_slice"]
-                ]
+                y1_err=hists[max_chi2_var]["ratio_err"][hists[max_chi2_var]["chi2_slice"]]
                 .detach()
                 .cpu()
                 .numpy(),
@@ -666,11 +659,7 @@ def _(
         iter_diag["reco_reweight_stats"].append(weight_summary(reco_reweights))
         iter_diag["gp_reco_train_xy"].append(
             (
-                features[hists[max_chi2_var]["chi2_slice"]]
-                .detach()
-                .cpu()
-                .numpy()
-                .copy(),
+                features[hists[max_chi2_var]["chi2_slice"]].detach().cpu().numpy().copy(),
                 hists[max_chi2_var]["ratio"][hists[max_chi2_var]["chi2_slice"]]
                 .detach()
                 .cpu()
@@ -719,12 +708,8 @@ def _(
             weights=gen_weights[:n_gen_matches],
         ).snapshot()
         gen_reweight_profile = gen_match_reweight_profile[max_chi2_var].values[1:-1]
-        gen_reweight_variance = (
-            gen_match_reweight_profile[max_chi2_var].variances[1:-1].clamp_min(0)
-        )
-        gen_effective_counts = gen_match_reweight_profile[
-            max_chi2_var
-        ].effective_counts[1:-1]
+        gen_reweight_variance = gen_match_reweight_profile[max_chi2_var].variances[1:-1].clamp_min(0)
+        gen_effective_counts = gen_match_reweight_profile[max_chi2_var].effective_counts[1:-1]
         selection = torch.isnan(gen_reweight_profile).logical_not_()
         gen_features = gen_features[selection]
         print(f"---{len(gen_features)} good bins out of {nbins} gen bins...")
@@ -810,9 +795,7 @@ def _(
     with open(f"{output_folder}/omniseq-diag-iter{last_iteration}.npz", "wb") as f:
         np.savez(
             f,
-            chi2=np.array(
-                [[d.get(c, np.nan) for c in jet_columns] for d in iter_diag["chi2"]]
-            ),
+            chi2=np.array([[d.get(c, np.nan) for c in jet_columns] for d in iter_diag["chi2"]]),
             jet_columns=np.array(jet_columns),
             max_chi2_var=np.array(iter_diag["max_chi2_var"]),
             max_chi2=np.array(iter_diag["max_chi2"]),
@@ -824,25 +807,17 @@ def _(
             max_over_median_gen=np.array(
                 [s["max"] / s["median"] for s in iter_diag["gen_weight_stats"]]
             ),
-            reco_reweight_max=np.array(
-                [s["max"] for s in iter_diag["reco_reweight_stats"]]
-            ),
-            gen_reweight_max=np.array(
-                [s["max"] for s in iter_diag["gen_reweight_stats"]]
-            ),
+            reco_reweight_max=np.array([s["max"] for s in iter_diag["reco_reweight_stats"]]),
+            gen_reweight_max=np.array([s["max"] for s in iter_diag["gen_reweight_stats"]]),
             gen_profile_nan_frac=np.array(iter_diag["gen_profile_nan_frac"]),
             reco_traj=reco_traj_arr,
             gen_traj=gen_traj_arr,
             gp_seed=np.int64(GP_SEED),
             reco_topk=np.array(iter_diag["reco_topk"], dtype=object),
             reco_reweight_quantiles=np.array(iter_diag["reco_reweight_quantiles"]),
-            gen_reweight_pre_clamp_min=np.array(
-                iter_diag["gen_reweight_pre_clamp_min"]
-            ),
+            gen_reweight_pre_clamp_min=np.array(iter_diag["gen_reweight_pre_clamp_min"]),
             gen_reweight_n_clamped=np.array(iter_diag["gen_reweight_n_clamped"]),
-            reco_reweight_pre_clamp_min=np.array(
-                iter_diag["reco_reweight_pre_clamp_min"]
-            ),
+            reco_reweight_pre_clamp_min=np.array(iter_diag["reco_reweight_pre_clamp_min"]),
             reco_reweight_n_clamped=np.array(iter_diag["reco_reweight_n_clamped"]),
         )
 
@@ -864,14 +839,10 @@ def _(
 
 @app.cell
 def _(
-    gen_match_table,
-    gen_miss_table,
     gen_weights_final,
     last_iteration,
     n_gen_matches,
     n_reco_matches,
-    reco_fake_table,
-    reco_match_table,
     reco_weights_final,
     sum_w_gen_orig,
     sum_w_reco_orig,
@@ -885,8 +856,16 @@ def _(
     # side back to the original P6 weight total so the sample-weight scale on
     # disk is invariant under reweighting. Mirrors
     # reverse_omnisequential.py:944-1010.
+    #
+    # The reweighting was computed on the `angularities` observables, but the
+    # OUTPUT arrows must carry the configured `feature_mode`'s feature columns
+    # (e.g. bin_counts' bin_index/bin_count) so the downstream pipeline reads
+    # them unchanged. Load the feature_mode's NOMINAL arrows fresh and rewrite
+    # only their `weight` column: the jets are the same in the same row order
+    # (both are preprocessed from jets/embedding/nominal/ptHat*/ in the same
+    # deterministic order), so the per-jet weights are row-aligned.
     _out_dir = os.path.join(
-        "./datasets/STAR_pp200GeV_production_2012/features",
+        dataset_root + "/features",
         feature_mode,
         "embedding",
         str(SysVar.UNFOLDING_PRIOR_LIKE_DATA),
@@ -896,22 +875,38 @@ def _(
     _w_gen_final = gen_weights_final.detach().cpu().numpy().astype(np.float64)
     _w_reco_final = reco_weights_final.detach().cpu().numpy().astype(np.float64)
     _w_gen_out = (_w_gen_final * sum_w_gen_orig / _w_gen_final.sum()).astype(np.float32)
-    _w_reco_out = (_w_reco_final * sum_w_reco_orig / _w_reco_final.sum()).astype(
-        np.float32
-    )
+    _w_reco_out = (_w_reco_final * sum_w_reco_orig / _w_reco_final.sum()).astype(np.float32)
 
-    _gm_out = replace_table_column(
-        gen_match_table, "weight", _w_gen_out[:n_gen_matches]
+    # Load the OUTPUT (configured feature_mode) nominal arrows.
+    _nom_dir = os.path.join(dataset_root + "/features", feature_mode, "embedding", str(SysVar.NONE))
+    _out_bufs = []
+
+
+    def _load_nom(_name):
+        _out_bufs.append(pa.memory_map(os.path.join(_nom_dir, f"{_name}.arrow"), "rb"))
+        return pa.ipc.open_file(_out_bufs[-1]).read_all()
+
+
+    _gm_nom = _load_nom("gen-matches")
+    _mi_nom = _load_nom("misses")
+    _rm_nom = _load_nom("reco-matches")
+    _fk_nom = _load_nom("fakes")
+
+    # Row-alignment guards: the feature_mode arrows must have the same per-side
+    # row counts as the angularities arrows the weights were computed on.
+    assert len(_gm_nom) == n_gen_matches, (
+        f"gen-matches row mismatch: {feature_mode}={len(_gm_nom)} vs obs={n_gen_matches}"
     )
-    _mi_out = replace_table_column(
-        gen_miss_table, "weight", _w_gen_out[n_gen_matches:]
+    assert len(_rm_nom) == n_reco_matches, (
+        f"reco-matches row mismatch: {feature_mode}={len(_rm_nom)} vs obs={n_reco_matches}"
     )
-    _rm_out = replace_table_column(
-        reco_match_table, "weight", _w_reco_out[:n_reco_matches]
-    )
-    _fk_out = replace_table_column(
-        reco_fake_table, "weight", _w_reco_out[n_reco_matches:]
-    )
+    assert len(_gm_nom) + len(_mi_nom) == _w_gen_out.shape[0], "gen-side row mismatch"
+    assert len(_rm_nom) + len(_fk_nom) == _w_reco_out.shape[0], "reco-side row mismatch"
+
+    _gm_out = replace_table_column(_gm_nom, "weight", _w_gen_out[:n_gen_matches])
+    _mi_out = replace_table_column(_mi_nom, "weight", _w_gen_out[n_gen_matches:])
+    _rm_out = replace_table_column(_rm_nom, "weight", _w_reco_out[:n_reco_matches])
+    _fk_out = replace_table_column(_fk_nom, "weight", _w_reco_out[n_reco_matches:])
 
     for _name, _t in (
         ("gen-matches", _gm_out),
@@ -926,10 +921,7 @@ def _(
                     _writer.write_batch(_batch)
         print(f"  wrote {_path} ({len(_t)} rows)")
 
-    print(
-        f"[omniseq] last_iteration={last_iteration}; "
-        f"4 arrows in {_out_dir}"
-    )
+    print(f"[omniseq] last_iteration={last_iteration}; 4 arrows in {_out_dir}")
     return
 
 
@@ -939,9 +931,7 @@ def _(bins, iter_hist_list, last_iteration):
     nrows = 3
     ncols = int(np.ceil(len(jet_columns) / nrows))
 
-    fig = plt.figure(
-        figsize=(ncols * fig_scale, nrows * fig_scale)
-    )  # , layout="constrained")
+    fig = plt.figure(figsize=(ncols * fig_scale, nrows * fig_scale))  # , layout="constrained")
     fig.suptitle(f"Iteration {last_iteration}", fontsize=30)
     subfigs = fig.subfigures(nrows, ncols)
     for ivar, var in enumerate(jet_columns):
@@ -1005,9 +995,7 @@ def _(iter_diag):
         _vals = np.array([d.get(_var, np.nan) for d in _chi2_table])
         _color = _cmap(_ivar % 20)
         _ax.plot(_iters, _vals, marker=".", color=_color, label=_var, linewidth=1.2)
-        _winner_mask = np.array(
-            [iter_diag["max_chi2_var"][i] == _var for i in range(_n_iter)]
-        )
+        _winner_mask = np.array([iter_diag["max_chi2_var"][i] == _var for i in range(_n_iter)])
         if _winner_mask.any():
             _ax.scatter(
                 _iters[_winner_mask],
@@ -1021,9 +1009,7 @@ def _(iter_diag):
     _ax.set_yscale("log")
     _ax.set_xlabel("iteration")
     _ax.set_ylabel(r"$\chi^2$")
-    _ax.set_title(
-        r"Per-variable $\chi^2$ trajectory (open circles = max-$\chi^2$ winner)"
-    )
+    _ax.set_title(r"Per-variable $\chi^2$ trajectory (open circles = max-$\chi^2$ winner)")
     _ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     _fig.tight_layout()
     plt.gcf()
@@ -1077,9 +1063,7 @@ def _(iter_diag):
     _axes[0, 0].set_title("Effective sample size")
     _axes[0, 0].legend()
 
-    _mom_reco = np.array(
-        [s["max"] / s["median"] for s in iter_diag["reco_weight_stats"]]
-    )
+    _mom_reco = np.array([s["max"] / s["median"] for s in iter_diag["reco_weight_stats"]])
     _mom_gen = np.array([s["max"] / s["median"] for s in iter_diag["gen_weight_stats"]])
     _axes[0, 1].plot(_iters_full, _mom_reco, marker="o", label="reco")
     _axes[0, 1].plot(_iters_full, _mom_gen, marker="s", label="gen")
@@ -1124,18 +1108,14 @@ def _(gen_traj_arr, reco_traj_arr):
     _iters_gen = np.arange(gen_traj_arr.shape[0])
 
     for _j in _pick_reco:
-        _axes[0].plot(
-            _iters_reco, reco_traj_arr[:, _j], color="C0", alpha=0.15, linewidth=0.7
-        )
+        _axes[0].plot(_iters_reco, reco_traj_arr[:, _j], color="C0", alpha=0.15, linewidth=0.7)
     _axes[0].set_yscale("log")
     _axes[0].set_xlabel("iteration (0 = initial)")
     _axes[0].set_ylabel("per-event weight")
     _axes[0].set_title(f"reco weight trajectories (n={_n_show})")
 
     for _j in _pick_gen:
-        _axes[1].plot(
-            _iters_gen, gen_traj_arr[:, _j], color="C1", alpha=0.15, linewidth=0.7
-        )
+        _axes[1].plot(_iters_gen, gen_traj_arr[:, _j], color="C1", alpha=0.15, linewidth=0.7)
     _axes[1].set_yscale("log")
     _axes[1].set_xlabel("iteration (0 = initial)")
     _axes[1].set_title(f"gen weight trajectories (n={_n_show})")
@@ -1169,9 +1149,7 @@ def _(bins, iter_diag):
             _xvals_e = _entry_e["winner_values"]
             _rw_e = _entry_e["reweights"]
             _pth_e = _entry_e["pth_bin"]
-            _sc_e = _ax_e.scatter(
-                _xvals_e, _rw_e, c=_pth_e, cmap="tab20", s=8, alpha=0.5
-            )
+            _sc_e = _ax_e.scatter(_xvals_e, _rw_e, c=_pth_e, cmap="tab20", s=8, alpha=0.5)
             _gp_x_e, _gp_y_e = _gps[_i]
             _ax_e.scatter(
                 _gp_x_e,
@@ -1198,9 +1176,7 @@ def _(bins, iter_diag):
             _axes_e[_j // _ncols_e, _j % _ncols_e].set_visible(False)
         if _sc_e is not None:
             _fig_e.colorbar(_sc_e, ax=_axes_e.ravel().tolist(), label="pth_bin")
-        _fig_e.suptitle(
-            "Top-K reco reweights per iteration (dashed = chi2_slice; + = GP train)"
-        )
+        _fig_e.suptitle("Top-K reco reweights per iteration (dashed = chi2_slice; + = GP train)")
     plt.gcf()
     return
 
@@ -1262,10 +1238,7 @@ def _(iter_diag):
             _ax_g.set_ylabel("# top-K events")
             _ax_g2 = _ax_g.twinx()
             _mean_post_g = np.array(
-                [
-                    float((_pre_g[_pth_g == _b] * _rw_g[_pth_g == _b]).mean())
-                    for _b in _unique_g
-                ]
+                [float((_pre_g[_pth_g == _b] * _rw_g[_pth_g == _b]).mean()) for _b in _unique_g]
             )
             _ax_g2.plot(
                 _unique_g,

@@ -18,12 +18,16 @@ from systematics import (
     get_tracking_efficiency_sys_var_mask,
 )
 
+from gdrive_helper import GDrivePath
+
 vector.register_awkward()
 
+
 bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
-data_folder_path: str = (
-    "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
-)
+
+root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
+data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+
 output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/jets"
 
 jet_col_fields = {
@@ -84,7 +88,7 @@ def inclusive_jets_sorted_by_pt(
     constituents = cluster_sequence.constituents(min_pt=min_pt)[sortedIndex]
     sortedConstitIndex = ak.argsort(constituents.pt, axis=-1, ascending=False)
     constituents = constituents[sortedConstitIndex]
-    print(f"------Clustered {ak.count(jets)} jets...")
+    print(f"------Clustered {ak.sum(ak.num(jets, axis=1))} jets...")
     return jets, constituents
 
 
@@ -223,34 +227,76 @@ def worker(
     nfiles_per_batch=100,
     nbatches=-1,
     max_events_per_batch=-1,
+    is_gdrive=False,
 ):
+    import os
+
     sink = pa.OSFile(output_file_name, "wb")
     writer = pa.ipc.new_file(sink, get_schema())
 
     nFiles = len(data_files)
     nBatches = nFiles // nfiles_per_batch + 1
     batchNumber = 0
-    for startFile in range(0, len(data_files), nfiles_per_batch):
-        batchNumber += 1
-        endFile = startFile + nfiles_per_batch
-        events = uproot.concatenate(data_files[startFile:endFile])
-        if max_events_per_batch >= 0:
-            events = events[:max_events_per_batch]
-        print(
-            f"Processing batch [{batchNumber}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
-        )
 
-        record_batch = cluster_batch(
-            events,
-            jet_definition,
-            cs_pt_min=cs_pt_min,
-            con_kt_min=con_kt_min,
-        )
+    if is_gdrive:
+        from gdrive_helper import GdriveBatchPrefetcher
 
-        writer.write(record_batch)
+        prefetcher = GdriveBatchPrefetcher(data_files, nfiles_per_batch)
+        for batch_local_files in prefetcher:
+            batchNumber += 1
+            if len(batch_local_files) == 0:
+                continue
+            events = uproot.concatenate(batch_local_files, num_workers=4)
+            if len(events) == 0:
+                print(f"Batch {batchNumber} has 0 events, skipping...")
+                for f in batch_local_files:
+                    os.remove(f.split(":")[0])
+                continue
+            if max_events_per_batch >= 0:
+                events = events[:max_events_per_batch]
+            print(
+                f"Processing batch [{batchNumber}/{nBatches}], with {len(events)} events"
+            )
 
-        if batchNumber == nbatches:
-            break
+            record_batch = cluster_batch(
+                events,
+                jet_definition,
+                cs_pt_min=cs_pt_min,
+                con_kt_min=con_kt_min,
+            )
+
+            writer.write(record_batch)
+
+            for f in batch_local_files:
+                os.remove(f.split(":")[0])
+
+            if batchNumber == nbatches:
+                break
+    else:
+        for startFile in range(0, len(data_files), nfiles_per_batch):
+            batchNumber += 1
+            endFile = startFile + nfiles_per_batch
+            events = uproot.concatenate(data_files[startFile:endFile], num_workers=4)
+            if len(events) == 0:
+                print(f"Batch {batchNumber} has 0 events, skipping...")
+                continue
+            if max_events_per_batch >= 0:
+                events = events[:max_events_per_batch]
+            print(
+                f"Processing batch [{batchNumber}/{nBatches}], file # {startFile} to {endFile}, with {len(events)} events"
+            )
+
+            record_batch = cluster_batch(
+                events,
+                jet_definition,
+                cs_pt_min=cs_pt_min,
+                con_kt_min=con_kt_min,
+            )
+
+            writer.write(record_batch)
+
+            if batchNumber == nbatches:
+                break
     writer.close()
     get_schema.cache_clear()
 
@@ -261,6 +307,7 @@ def read_input_files(
     glob_expr="*.tree.root",
     tree_name="Events",
     run_number_token_id=0,
+    is_gdrive=False,
 ):
     print(f"Reading input data files from {folder_path}")
     with open(bad_run_list, "r") as bad_run_stream:
@@ -270,13 +317,34 @@ def read_input_files(
     good_run_list = []
     bad_run_files = []
     good_run_files = []
-    for filePath in Path(folder_path).rglob(glob_expr):
-        runNumber = str(filePath.stem).split("_")[run_number_token_id]
-        if runNumber in bad_runs:
-            bad_run_files.append(f"{str(filePath)}:{tree_name}")
-        else:
-            good_run_list.append(int(runNumber))
-            good_run_files.append(f"{str(filePath)}:{tree_name}")
+
+    if isinstance(folder_path, GDrivePath):
+        is_gdrive = True
+
+    if is_gdrive:
+        from gdrive_helper import list_gdrive_folder
+
+        files = list_gdrive_folder(folder_path, glob_expr)
+        for f in files:
+            runNumber = str(Path(f["name"]).stem).split("_")[run_number_token_id]
+            if runNumber in bad_runs:
+                bad_run_files.append(
+                    {"id": f["id"], "name": f["name"], "tree": tree_name}
+                )
+            else:
+                good_run_list.append(int(runNumber))
+                good_run_files.append(
+                    {"id": f["id"], "name": f["name"], "tree": tree_name}
+                )
+    else:
+        for filePath in Path(folder_path).rglob(glob_expr):
+            runNumber = str(filePath.stem).split("_")[run_number_token_id]
+            if runNumber in bad_runs:
+                bad_run_files.append(f"{str(filePath)}:{tree_name}")
+            else:
+                good_run_list.append(int(runNumber))
+                good_run_files.append(f"{str(filePath)}:{tree_name}")
+
     good_runs = set(good_run_list)
     print(
         f"Read {len(good_run_files)} files for {len(good_runs)} good runs, {len(bad_run_files)} files for {len(bad_runs)} bad runs"
@@ -288,8 +356,12 @@ if __name__ == "__main__":
     do_test = False
     con_kt_min = 0.2
 
+    is_gdrive = isinstance(data_folder_path, GDrivePath) or (
+        "/" not in str(data_folder_path) and len(str(data_folder_path)) > 20
+    )
+
     data_file_list, good_runs = read_input_files(
-        data_folder_path, bad_run_list, run_number_token_id=0
+        data_folder_path, bad_run_list, run_number_token_id=0, is_gdrive=is_gdrive
     )
 
     jetDef = fj.JetDefinition(
@@ -314,6 +386,7 @@ if __name__ == "__main__":
         nfiles_per_batch=nfiles_per_batch,
         nbatches=nbatches,
         max_events_per_batch=max_events_per_batch,
+        is_gdrive=is_gdrive,
     )
 
     print("Done!")

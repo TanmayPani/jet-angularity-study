@@ -9,10 +9,10 @@ from torch.distributions import Binomial
 
 from tensordict import TensorDict
 
-from churten.stateless import StatelessModule
-from churten.optimizer import Adam
-from churten.callbacks import EarlyStopping
-from churten.utils.nn.archs import MLP
+from torchstrap.stateless import StatelessModule
+from torchstrap.optimizer import Adam
+from torchstrap.callbacks import EarlyStopping
+from torchstrap.utils.nn.archs import MLP
 
 from utils.data import TensorDictDataset
 from utils.data import train_test_multi_loaders, reweight_inference_loaders

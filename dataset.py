@@ -15,13 +15,13 @@ from torchdata.nodes import Prefetcher
 from torchdata.nodes import PinMemory
 from torchdata.nodes import Loader, Header
 
-from churten.utils.data import (
+from torchstrap.utils.data import (
     TensorBatchSampler,
     undersample_and_random_split,
     random_split,
 )
 
-from churten.utils.nn.transform import Normalize
+from torchstrap.utils.nn.transform import Normalize
 
 
 class Log1p(torch.nn.Module):
@@ -43,14 +43,61 @@ def _chunked_std_mean(
     output_shape = x.shape[:dim] + x.shape[dim + 1 :]
     sum = torch.zeros(output_shape, dtype=dtype, device=device)
     sum_sq = torch.zeros(output_shape, dtype=dtype, device=device)
-    for chunk_idx in torch.arange(len(x)).split(chunk_size):
-        chunk = x[chunk_idx] if transform is None else transform(x[chunk_idx])
+    # Contiguous slices read the memmap faster than fancy-indexing an arange chunk.
+    # for chunk_idx in torch.arange(len(x)).split(chunk_size):
+    #     chunk = x[chunk_idx] if transform is None else transform(x[chunk_idx])
+    for start in range(0, len(x), chunk_size):
+        # Cast to float BEFORE the transform: the bin_counts memmap is uint8, and
+        # log1p (and integer .sum()) are undefined / overflow on a Byte tensor.
+        sl = x[start : start + chunk_size].to(dtype)
+        chunk = sl if transform is None else transform(sl)
         sum += chunk.sum(dim=dim)
         sum_sq += chunk.square().sum(dim=dim)
     mean = sum / num_elem
     var = (sum_sq / num_elem) - mean * mean
     std = var.clamp_min(0).sqrt().clamp_min(eps)
     return std, mean
+
+
+def _chunked_channel_std_mean(
+    x: torch.Tensor,
+    channel_dim: int = 1,
+    chunk_size: int = 500_000,
+    transform: Callable[[torch.Tensor], torch.Tensor] | None = None,
+    eps=1e-6,
+    dtype=torch.float32,
+    device="cpu",
+):
+    """Per-channel mean/std for image inputs `(N, C, *spatial)`.
+
+    Reduces over the sample dim and every spatial dim, keeping only `channel_dim`,
+    so count cells that are mostly zero do not each get their own tiny std (the
+    failure mode of per-cell normalization on sparse count grids). Returns buffers
+    shaped to broadcast over a per-jet `(C, *spatial)` input, e.g. `(C, 1, 1)`.
+    """
+    C = x.shape[channel_dim]
+    reduce_dims = [d for d in range(x.dim()) if d != channel_dim]
+    sum = torch.zeros(C, dtype=dtype, device=device)
+    sum_sq = torch.zeros(C, dtype=dtype, device=device)
+    count = 0
+    # Contiguous slices read the memmap faster than fancy-indexing an arange chunk.
+    # for chunk_idx in torch.arange(len(x)).split(chunk_size):
+    #     chunk = x[chunk_idx] if transform is None else transform(x[chunk_idx])
+    for start in range(0, len(x), chunk_size):
+        # Cast to float BEFORE the transform: the bin_counts memmap is uint8, and
+        # log1p is undefined on a Byte tensor.
+        sl = x[start : start + chunk_size].to(dtype)
+        chunk = sl if transform is None else transform(sl)
+        sum += chunk.sum(dim=reduce_dims)
+        sum_sq += chunk.square().sum(dim=reduce_dims)
+        count += chunk.numel() // C
+    mean = sum / count
+    var = (sum_sq / count) - mean * mean
+    std = var.clamp_min(0).sqrt().clamp_min(eps)
+    # Broadcast shape over a per-jet (C, *spatial): channel at index channel_dim-1.
+    view = [1] * (x.dim() - 1)
+    view[channel_dim - 1] = C
+    return std.reshape(view), mean.reshape(view)
 
 
 def build_input_transform(
@@ -67,8 +114,17 @@ def build_input_transform(
             Log1p(),
             Normalize(mean.to(device), std.to(device)),
         )
+    if count_transform == "log1p_per_channel_z_norm":
+        # For (N, C, H, W) count images: compress with log1p, then standardize
+        # per channel (the (2,9,9) bin-image CNN route).
+        std, mean = _chunked_channel_std_mean(input, transform=torch.log1p)
+        return torch.nn.Sequential(
+            Log1p(),
+            Normalize(mean.to(device), std.to(device)),
+        )
     raise ValueError(
-        f"count_transform must be one of (none, z_norm, log1p_z_norm), but got {count_transform!r}"
+        "count_transform must be one of (none, z_norm, log1p_z_norm, "
+        f"log1p_per_channel_z_norm), but got {count_transform!r}"
     )
 
 
@@ -127,7 +183,18 @@ class TensorDictDataset(Dataset[tuple[Tensor, ...]]):
 
     @sample_weight.setter
     def sample_weight(self, w: Tensor):
-        # print(w.dim())
+        self.set_sample_weight(w)
+
+    def set_sample_weight(self, w: Tensor, *, copy: bool = True) -> None:
+        """Install per-sample weights and (if categorical) class-balance them.
+
+        ``copy=True`` (the default, and what the ``sample_weight =`` property uses)
+        clones ``w`` so the dataset owns its buffer. Pass ``copy=False`` to *donate*
+        a freshly-built 2D ``w`` (e.g. a ``torch.cat`` result the caller discards):
+        it is taken by reference and the in-place class-balancing mutates it
+        directly, avoiding a second (R, N) ~4.6 GB clone on every OmniFold reweight
+        assignment. Only safe when the caller keeps no alias to ``w``.
+        """
         if w.dim() == 1:
             assert len(w) == self.length
             self.weight = w.expand(self.num_replicas, -1).clone()
@@ -136,12 +203,16 @@ class TensorDictDataset(Dataset[tuple[Tensor, ...]]):
         else:
             assert w.shape[0] == self.num_replicas
             assert w.shape[1] == self.length
-            self.weight = w.clone()
+            self.weight = w.clone() if copy else w
 
         if self.is_categorical:
-            self.class_weights = self.class_sizes.div(
-                (self.weight.unsqueeze(-1) * self.one_hot_label).sum(dim=-2)
-            )
+            # Per-class weight sums via a scatter-add into a tiny (R, C) buffer.
+            # The old `(weight.unsqueeze(-1) * one_hot).sum(-2)` materialised a
+            # full (R, N, C) outer product first — ~9 GB at R=40, N=29M — which
+            # spiked host RAM on every reweight assignment (OmniFold OOM).
+            class_sums = self.weight.new_zeros(self.num_replicas, self.num_classes)
+            class_sums.index_add_(1, self.class_labels, self.weight)
+            self.class_weights = self.class_sizes.div(class_sums)
             self.weight.mul_(self.class_weights[..., self.class_labels])
 
         # print("setter called!")
@@ -293,6 +364,7 @@ def get_stacked_batch_loader(
     collate_fn: Optional[Callable] = None,
     pin_memory: bool = False,
     load_only_first: Optional[int] = None,
+    mp_method: str = "process",
 ):
     map_fn = collate_fn or dataset.__getitem__
 
@@ -301,7 +373,11 @@ def get_stacked_batch_loader(
         node,
         map_fn=map_fn,
         num_workers=num_workers,
-        method="process",
+        # "process" pickles the whole dataset (incl. the (N,length) weight tensor)
+        # to each worker; "thread" shares memory and the per-batch memmap gather
+        # releases the GIL. Switchable so thread-vs-process can be benchmarked.
+        # method="process",
+        method=mp_method,
         in_order=True,
     )
 

@@ -125,6 +125,14 @@ def get_unfolding_iter(sys_var, nom_iter=5):
             return nom_iter - 1
         case SysVar.UNFOLDING_ITERATION_1:
             return nom_iter + 2
+        case SysVar.UNFOLDING_PRIOR_LIKE_DATA:
+            # Non-closure (LIKE_DATA) closure test keeps its early-iteration choice.
+            return 1
+        # --- old: HERWIG7 returned 3 because the old closure run stopped at
+        # iter 3. HERWIG7/PYTHIA8 are now real-data unfoldings and should use
+        # the nominal iteration (override here only if a re-run is truncated). ---
+        # case SysVar.UNFOLDING_PRIOR_HERWIG7:
+        #     return 3
         case _:
             return nom_iter
 
@@ -158,6 +166,43 @@ def _unc_prior_var(h_nominal: dict[str, torch.Tensor], ratio: dict[str, torch.Te
     return prior_var_unc
 
 
+def _stat_sigma(
+    h: dict[str, torch.Tensor], stat_key: str = "bin_count_std"
+) -> torch.Tensor:
+    sig = h.get(stat_key)
+    if sig is None:
+        sig = h["bin_count_err"]
+    return sig
+
+
+def _barlow_prune_unc(
+    unc: torch.Tensor,
+    h_nominal: dict[str, torch.Tensor],
+    *h_sys_vars: dict[str, torch.Tensor],
+    threshold: float = 1.0,
+    stat_key: str = "bin_count_std",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Apply the Barlow check to a per-source absolute uncertainty.
+
+    σ²_uncorr = |mean(σ²_var) − σ²_nom|
+    significance = |unc| / √σ²_uncorr
+    Returns (pruned_unc, significance). Bins with significance < threshold
+    are set to 0; bins where σ²_uncorr ≈ 0 get significance 0 and are pruned.
+    """
+    sigma2_nom = _stat_sigma(h_nominal, stat_key).square()
+    sigma2_var = torch.stack(
+        [_stat_sigma(h, stat_key).square() for h in h_sys_vars]
+    ).mean(0)
+    sigma2_uncorr = (sigma2_var - sigma2_nom).abs_()
+
+    eps = torch.finfo(unc.dtype).eps
+    denom = sigma2_uncorr.sqrt().clamp_min(eps)
+    significance = (unc.abs() / denom).nan_to_num_(nan=0.0, posinf=0.0, neginf=0.0)
+    significance[sigma2_uncorr <= 0.0] = 0.0
+    pruned = torch.where(significance >= threshold, unc, torch.zeros_like(unc))
+    return pruned, significance
+
+
 def calculate_sys_uncertainty(
     hist_nominal: dict[str, torch.Tensor],
     var_name: str,
@@ -166,7 +211,8 @@ def calculate_sys_uncertainty(
     path_prefix: str = "",
     feature_mode: str,
     is_equal_pref: bool = False,
-):
+    barlow_threshold: float | None = 1.0,
+) -> dict[str, torch.Tensor]:
     sys_var_paths = [
         os.path.join(path_prefix, sys_var, feature_mode, var_name, hist_file_name)
         for sys_var in sys_var_names
@@ -175,9 +221,19 @@ def calculate_sys_uncertainty(
     sys_var_hists = [torch.load(file_path) for file_path in sys_var_paths]
 
     if is_equal_pref:
-        return _unc_equal_preferred_sys_var(hist_nominal, *sys_var_hists)
+        # Active analysis never sets is_equal_pref=True; keep returning the
+        # legacy std so the helper is still callable but skip Barlow.
+        _, raw = _unc_equal_preferred_sys_var(hist_nominal, *sys_var_hists)
     else:
-        return _unc_less_preferred_sys_var(hist_nominal, *sys_var_hists)
+        raw = _unc_less_preferred_sys_var(hist_nominal, *sys_var_hists)
+
+    if barlow_threshold is None or is_equal_pref:
+        return {"raw": raw, "pruned": raw, "barlow_sig": torch.zeros_like(raw)}
+
+    pruned, sig = _barlow_prune_unc(
+        raw, hist_nominal, *sys_var_hists, threshold=barlow_threshold
+    )
+    return {"raw": raw, "pruned": pruned, "barlow_sig": sig}
 
 
 def calculate_prior_uncertainty(
@@ -187,7 +243,8 @@ def calculate_prior_uncertainty(
     path_prefix: str,
     feature_mode: str,
     prior_sysvar: SysVar = SysVar.UNFOLDING_PRIOR_LIKE_DATA,
-):
+    barlow_threshold: float | None = 1.0,
+) -> dict[str, torch.Tensor]:
     ratio_path = os.path.join(
         path_prefix,
         str(prior_sysvar),
@@ -197,89 +254,286 @@ def calculate_prior_uncertainty(
         hist_file_name,
     )
     hist_ratio = torch.load(ratio_path, mmap=True)
-    sys_var_prior = _unc_prior_var(hist_nominal, hist_ratio)
-    return sys_var_prior
+    raw = _unc_prior_var(hist_nominal, hist_ratio)
+
+    if barlow_threshold is None:
+        return {"raw": raw, "pruned": raw, "barlow_sig": torch.zeros_like(raw)}
+
+    # Barlow for priors uses the variation's own unfolded hist for σ²_var.
+    # Prior sysvars share most events with nominal, so |σ²_var − σ²_nom| is a
+    # weaker uncorrelated-stat proxy than for detector vars — treat the
+    # pruning as a sanity check rather than a strict statistical test.
+    unfolded_path = os.path.join(
+        path_prefix,
+        str(prior_sysvar),
+        feature_mode,
+        var_name,
+        "unfolded",
+        hist_file_name,
+    )
+    if not os.path.exists(unfolded_path):
+        return {"raw": raw, "pruned": raw, "barlow_sig": torch.zeros_like(raw)}
+
+    hist_unfolded = torch.load(unfolded_path, mmap=True)
+    pruned, sig = _barlow_prune_unc(
+        raw, hist_nominal, hist_unfolded, threshold=barlow_threshold
+    )
+    return {"raw": raw, "pruned": pruned, "barlow_sig": sig}
 
 
-def calculate_uncertainties(var_name: str, path_prefix: str, feature_mode: str):
+def calculate_prior_uncertainty_combined(
+    hist_nominal: dict[str, torch.Tensor],
+    var_name: str,
+    hist_file_name: str,
+    path_prefix: str,
+    feature_mode: str,
+    prior_sysvars: tuple[SysVar, ...] = (
+        SysVar.UNFOLDING_PRIOR_LIKE_DATA,
+        SysVar.UNFOLDING_PRIOR_HERWIG7,
+    ),
+    barlow_threshold: float | None = 1.0,
+) -> dict[str, torch.Tensor]:
+    """Single *equal-status* prior systematic from all prior variations.
+
+    Each prior contributes a pseudo-varied spectrum ``nominal / closure_ratio``
+    (``closure_ratio`` = its own unfolded/truth). The priors are treated as one
+    uncertainty of equal status: ``unc = |nominal − mean_p(pseudo_p)|`` (a
+    priors-only mean, deviation measured vs nominal — nominal is NOT a member),
+    replacing the old per-prior quadrature sum. Priors whose closure ratio is
+    absent on disk are skipped; if none exist the source is zero.
+    """
+    pseudo_hists: list[dict[str, torch.Tensor]] = []
+    unfolded_hists: list[dict[str, torch.Tensor]] = []
+    for prior_sysvar in prior_sysvars:
+        ratio_path = os.path.join(
+            path_prefix, str(prior_sysvar), feature_mode, var_name, "ratio",
+            hist_file_name,
+        )
+        if not os.path.exists(ratio_path):
+            continue
+        hist_ratio = torch.load(ratio_path, mmap=True)
+        pseudo_hists.append(
+            {"bin_count": hist_nominal["bin_count"] / hist_ratio["bin_count"]}
+        )
+        # Barlow σ²_var proxy uses the prior's own unfolded hist (shared-event,
+        # so this is a sanity check rather than a strict statistical test).
+        unfolded_path = os.path.join(
+            path_prefix, str(prior_sysvar), feature_mode, var_name, "unfolded",
+            hist_file_name,
+        )
+        if os.path.exists(unfolded_path):
+            unfolded_hists.append(torch.load(unfolded_path, mmap=True))
+
+    if not pseudo_hists:
+        zero = torch.zeros_like(hist_nominal["bin_count"])
+        return {"raw": zero, "pruned": zero, "barlow_sig": zero}
+
+    # |nominal − mean(pseudo_p)|, the same "less preferred" form as detector
+    # sources but over the prior pseudo-spectra.
+    raw = _unc_less_preferred_sys_var(hist_nominal, *pseudo_hists)
+
+    if barlow_threshold is None or not unfolded_hists:
+        return {"raw": raw, "pruned": raw, "barlow_sig": torch.zeros_like(raw)}
+
+    pruned, sig = _barlow_prune_unc(
+        raw, hist_nominal, *unfolded_hists, threshold=barlow_threshold
+    )
+    return {"raw": raw, "pruned": pruned, "barlow_sig": sig}
+
+
+# Display/diagnostic keys: every per-source uncertainty drawn in the QA plots and
+# tabulated individually. The four unfolding-group components (iter, JER, the two
+# priors) are kept for diagnostics AND collapsed into the `unfolding_sys` envelope
+# (max), which is what actually feeds the quadrature total (see TOTAL_KEYS).
+SOURCE_KEYS = (
+    "unf_iter_sys",
+    "jet_pt_res_sys",
+    "track_pt_sys",
+    "tower_et_corr_sys",
+    # --- old: two independent prior sources summed in quadrature ---
+    # "unf_prior_like_data",
+    # "unf_prior_herwig7",
+    # --- older: single equal-status combined prior source (mean of priors) ---
+    # "unf_prior",
+    # --- old: all three priors treated as closure-ratio envelope members ---
+    # "unf_prior_like_data",
+    # "unf_prior_herwig7",
+    # --- new: HERWIG7/PYTHIA8 are model-dependence variations (|nominal - alt|,
+    # alternate unfolded real data); LIKE_DATA is the method non-closure. All
+    # collapse into the single unfolding envelope. ---
+    "unf_prior_herwig7",
+    "unf_prior_pythia8",
+    "unf_nonclosure",
+    "unfolding_sys",
+)
+
+# Sources that actually enter the quadrature `total_sys`. The four unfolding-group
+# components are NOT here individually — they are enveloped (per-bin max) into the
+# single `unfolding_sys` source, which stands in for all of them.
+TOTAL_KEYS = (
+    "unfolding_sys",
+    "track_pt_sys",
+    "tower_et_corr_sys",
+)
+
+# The non-closure source shares most events with the nominal (it is a closure
+# test on the reweighted sim), so the Barlow check's uncorrelated-stat proxy
+# |σ²_var − σ²_nom| is weak — it gets its own (typically different) significance
+# threshold from the detector vars. The model priors (HERWIG7/PYTHIA8) now
+# unfold real data and are treated like detector sources (default threshold).
+PRIOR_SOURCE_KEYS = ("unf_nonclosure",)
+# --- old: ("unf_prior_like_data", "unf_prior_herwig7") ---
+
+
+def _is_source_key(k: str) -> bool:
+    return k in SOURCE_KEYS
+
+
+def calculate_uncertainties(
+    var_name: str,
+    path_prefix: str,
+    feature_mode: str,
+    barlow_threshold: float | None = 1.0,
+    prior_barlow_threshold: float | None = None,
+):
+    # Shared-event (prior) sources use their own threshold; default to the
+    # detector one when unset so old callers behave as before.
+    if prior_barlow_threshold is None:
+        prior_barlow_threshold = barlow_threshold
+
     nominal_path = os.path.join(path_prefix, "nominal", feature_mode, var_name)
     sys_vars = defaultdict(dict)
     hist_nominal = {}
+
+    detector_sources = {
+        "unf_iter_sys": ("unf_iter_sys_0", "unf_iter_sys_1"),
+        "jet_pt_res_sys": ("jet_pt_res_sys_0", "jet_pt_res_sys_1"),
+        "track_pt_sys": ("track_pt_sys",),
+        "tower_et_corr_sys": ("tower_et_corr_sys",),
+    }
+
     for file_name in os.listdir(nominal_path):
         hist_name = file_name.removesuffix(".pt")
         hist_nominal[hist_name] = torch.load(
             os.path.join(nominal_path, file_name),
             mmap=True,
         )
-        sys_vars[hist_name]["unf_iter_sys"] = calculate_sys_uncertainty(
-            hist_nominal[hist_name],
-            var_name,
-            file_name,
-            "unf_iter_sys_0",
-            "unf_iter_sys_1",
-            path_prefix=path_prefix,
-            feature_mode=feature_mode,
-        )
+        h_nom = hist_nominal[hist_name]
 
-        sys_vars[hist_name]["jet_pt_res_sys"] = calculate_sys_uncertainty(
-            hist_nominal[hist_name],
-            var_name,
-            file_name,
-            "jet_pt_res_sys_0",
-            "jet_pt_res_sys_1",
-            path_prefix=path_prefix,
-            feature_mode=feature_mode,
-        )
+        for src_key, var_names in detector_sources.items():
+            res = calculate_sys_uncertainty(
+                h_nom,
+                var_name,
+                file_name,
+                *var_names,
+                path_prefix=path_prefix,
+                feature_mode=feature_mode,
+                barlow_threshold=barlow_threshold,
+            )
+            sys_vars[hist_name][src_key] = res["pruned"]
+            sys_vars[hist_name][f"{src_key}_raw"] = res["raw"]
+            sys_vars[hist_name][f"{src_key}_barlow_sig"] = res["barlow_sig"]
 
-        sys_vars[hist_name]["track_pt_sys"] = calculate_sys_uncertainty(
-            hist_nominal[hist_name],
-            var_name,
-            file_name,
-            "track_pt_sys",
-            path_prefix=path_prefix,
-            feature_mode=feature_mode,
-        )
+        # --- old: per-prior quadrature sources (LIKE-DATA + HERWIG7 separate) ---
+        # prior_sources = [("unf_prior_like_data", SysVar.UNFOLDING_PRIOR_LIKE_DATA)]
+        # ...
+        # --- older: single equal-status combined prior source (mean of priors) ---
+        # res = calculate_prior_uncertainty_combined(...)
+        # --- old: ALL priors treated as closure-ratio sources via
+        # calculate_prior_uncertainty (nominal/ratio), incl. HERWIG7 ---
+        # prior_sources = (
+        #     ("unf_prior_like_data", SysVar.UNFOLDING_PRIOR_LIKE_DATA),
+        #     ("unf_prior_herwig7", SysVar.UNFOLDING_PRIOR_HERWIG7),
+        # )
+        # for src_key, prior_sysvar in prior_sources: ... calculate_prior_uncertainty(...)
+        #
+        # --- new: model-dependence priors (HERWIG7/PYTHIA8) unfold REAL data
+        # with their reweighted embedding as prior, so they are detector-style
+        # "less preferred" variations |nominal - alt_unfolded| read from the
+        # top-level snapshot (NOT the closure-ratio trick). Guard on the
+        # snapshot existing (PYTHIA8 may be absent). ---
+        model_prior_sources = {
+            "unf_prior_herwig7": (str(SysVar.UNFOLDING_PRIOR_HERWIG7),),
+            "unf_prior_pythia8": (str(SysVar.UNFOLDING_PRIOR_PYTHIA8),),
+        }
+        for src_key, var_names in model_prior_sources.items():
+            snap_path = os.path.join(
+                path_prefix, var_names[0], feature_mode, var_name, file_name
+            )
+            if not os.path.exists(snap_path):
+                continue
+            res = calculate_sys_uncertainty(
+                h_nom,
+                var_name,
+                file_name,
+                *var_names,
+                path_prefix=path_prefix,
+                feature_mode=feature_mode,
+                barlow_threshold=barlow_threshold,
+            )
+            sys_vars[hist_name][src_key] = res["pruned"]
+            sys_vars[hist_name][f"{src_key}_raw"] = res["raw"]
+            sys_vars[hist_name][f"{src_key}_barlow_sig"] = res["barlow_sig"]
 
-        sys_vars[hist_name]["tower_et_corr_sys"] = calculate_sys_uncertainty(
-            hist_nominal[hist_name],
-            var_name,
-            file_name,
-            "tower_et_corr_sys",
-            path_prefix=path_prefix,
-            feature_mode=feature_mode,
+        # --- new: LIKE_DATA is now the method NON-CLOSURE source. It stays a
+        # closure test (reweighted reco pseudo-data vs nominal sim); the
+        # uncertainty form is unchanged (nominal x |1/ratio - 1| via
+        # calculate_prior_uncertainty), only relabeled `unf_nonclosure`. Guard
+        # on the closure ratio existing on disk. ---
+        _nc_ratio_path = os.path.join(
+            path_prefix, str(SysVar.UNFOLDING_PRIOR_LIKE_DATA), feature_mode,
+            var_name, "ratio", file_name,
         )
-
-        sys_vars[hist_name]["unf_prior_like_data"] = calculate_prior_uncertainty(
-            hist_nominal[hist_name],
-            var_name,
-            file_name,
-            path_prefix=path_prefix,
-            feature_mode=feature_mode,
-        )
-
-        _h7_ratio_path = os.path.join(
-            path_prefix,
-            str(SysVar.UNFOLDING_PRIOR_HERWIG7),
-            feature_mode,
-            var_name,
-            "ratio",
-            file_name,
-        )
-        if os.path.exists(_h7_ratio_path):
-            sys_vars[hist_name]["unf_prior_herwig7"] = calculate_prior_uncertainty(
-                hist_nominal[hist_name],
+        if os.path.exists(_nc_ratio_path):
+            res = calculate_prior_uncertainty(
+                h_nom,
                 var_name,
                 file_name,
                 path_prefix=path_prefix,
                 feature_mode=feature_mode,
-                prior_sysvar=SysVar.UNFOLDING_PRIOR_HERWIG7,
+                prior_sysvar=SysVar.UNFOLDING_PRIOR_LIKE_DATA,
+                barlow_threshold=prior_barlow_threshold,
             )
+            sys_vars[hist_name]["unf_nonclosure"] = res["pruned"]
+            sys_vars[hist_name]["unf_nonclosure_raw"] = res["raw"]
+            sys_vars[hist_name]["unf_nonclosure_barlow_sig"] = res["barlow_sig"]
 
-        squared_sum = torch.zeros_like(hist_nominal[hist_name]["bin_count"])
-        for sys_var_unc in sys_vars[hist_name].values():
-            squared_sum.add_(sys_var_unc.square())
-        sys_vars[hist_name]["total_sys"] = squared_sum.sqrt_()
-        # sys_vars[hist_name]["bootstrap_stat"] = hist_nominal[hist_name]["bin_count_std"]
+        # --- unfolding envelope: per-bin MAX over the raw unfolding-group
+        # components (iter, JER, model-prior HERWIG7/PYTHIA8, non-closure). Raw,
+        # no Barlow gate within the group (user choice). Absent members are
+        # simply excluded from the max. This single source stands in for all of
+        # them in the total. ---
+        _env_members = [
+            sys_vars[hist_name]["unf_iter_sys_raw"],
+            sys_vars[hist_name]["jet_pt_res_sys_raw"],
+        ]
+        for _pk in (
+            "unf_prior_herwig7_raw",
+            "unf_prior_pythia8_raw",
+            "unf_nonclosure_raw",
+        ):
+            if _pk in sys_vars[hist_name]:
+                _env_members.append(sys_vars[hist_name][_pk])
+        unfolding_sys = torch.stack(_env_members).amax(0)
+        sys_vars[hist_name]["unfolding_sys"] = unfolding_sys
+        # raw == pruned for the envelope (it is never Barlow-pruned)
+        sys_vars[hist_name]["unfolding_sys_raw"] = unfolding_sys
+
+        zero = torch.zeros_like(h_nom["bin_count"])
+
+        # Quadrature over TOTAL_KEYS only (envelope + the two standalone detector
+        # sources); the per-component unfolding sources live in the dict for
+        # diagnostics but must NOT be summed in again (that would double-count).
+        sq_sum_pruned = zero.clone()
+        sq_sum_raw = zero.clone()
+        for tk in TOTAL_KEYS:
+            v = sys_vars[hist_name][tk]
+            sq_sum_pruned.add_(v.square())
+            v_raw = sys_vars[hist_name].get(f"{tk}_raw", v)
+            sq_sum_raw.add_(v_raw.square())
+        sys_vars[hist_name]["total_sys"] = sq_sum_pruned.sqrt_()
+        sys_vars[hist_name]["total_sys_raw"] = sq_sum_raw.sqrt_()
+        # sys_vars[hist_name]["bootstrap_stat"] = h_nom["bin_count_std"]
     return sys_vars, hist_nominal
 
 
@@ -301,8 +555,18 @@ def _safe_rel_unc(unc, y):
     )
 
 
-def plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir):
+def plot_uncertainties(
+    var_name,
+    hnominal,
+    sys_vars,
+    fig_save_dir,
+    barlow_threshold=None,
+    prior_barlow_threshold=None,
+):
     import re
+
+    if prior_barlow_threshold is None:
+        prior_barlow_threshold = barlow_threshold
 
     jpt_bins = get_jet_pt_bins(SysVar.NONE)
     num_cols = len(jpt_bins) - 1
@@ -322,28 +586,40 @@ def plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir):
     for mod, ijpts in mods.items():
         ijpts = sorted(set(ijpts))
         first_hname = f"{mod}_jpt{ijpts[0]}"
-        sv_keys = [k for k in sys_vars[first_hname].keys() if k != "total_sys"]
+        # Canonical source keys: skip totals, *_raw, *_barlow_sig.
+        sv_keys = [k for k in sys_vars[first_hname].keys() if _is_source_key(k)]
 
         fig = plt.figure(figsize=(num_cols * fig_scale, fig_scale + 1))
         axs = fig.subplots(
-            1, num_cols, sharey=True,
+            1,
+            num_cols,
+            sharey=True,
             gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
         )
         if num_cols == 1:
             axs = [axs]
         axs[0].set_ylabel(ylabel, labelpad=10, size="xx-large")
 
-        single_figs, single_axs = {}, {}
+        # Per-source single figure: 2 rows — top: pre/post Barlow rel. unc, bottom: significance.
+        single_figs, single_axs_top, single_axs_bot = {}, {}, {}
         for sv in sv_keys:
-            single_figs[sv] = plt.figure(figsize=(num_cols * fig_scale, fig_scale + 1))
-            ax_arr = single_figs[sv].subplots(
-                1, num_cols, sharey=True,
-                gridspec_kw={"wspace": 0, "right": 0.9, "left": 0.2},
+            single_figs[sv] = plt.figure(
+                figsize=(num_cols * fig_scale, fig_scale * 1.5)
+            )
+            ax_grid = single_figs[sv].subplots(
+                2,
+                num_cols,
+                sharey="row",
+                sharex="col",
+                height_ratios=[2, 1],
+                gridspec_kw={"hspace": 0, "wspace": 0, "right": 0.9, "left": 0.2},
             )
             if num_cols == 1:
-                ax_arr = [ax_arr]
-            ax_arr[0].set_ylabel(ylabel, labelpad=10, size="xx-large")
-            single_axs[sv] = ax_arr
+                ax_grid = ax_grid.reshape(2, 1)
+            ax_grid[0, 0].set_ylabel(ylabel, labelpad=10, size="xx-large")
+            ax_grid[1, 0].set_ylabel("Barlow sig.", labelpad=10, size="x-large")
+            single_axs_top[sv] = ax_grid[0]
+            single_axs_bot[sv] = ax_grid[1]
 
         for ijpt in ijpts:
             if ijpt >= num_cols:
@@ -362,45 +638,133 @@ def plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir):
             stat_unc = hist.get("bin_count_std", torch.zeros_like(y))
             rel_stat = _safe_rel_unc(stat_unc, y)
             total_rel = _safe_rel_unc(sys_vars[hist_name]["total_sys"], y)
+            total_rel_raw = _safe_rel_unc(
+                sys_vars[hist_name].get(
+                    "total_sys_raw", sys_vars[hist_name]["total_sys"]
+                ),
+                y,
+            )
 
             ax = axs[ijpt]
             ax.text(
-                0.15, 0.55,
+                0.15,
+                0.55,
                 rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
                 transform=ax.transAxes,
             )
             zero_base = torch.zeros_like(y).numpy()
-            ax.stairs(rel_stat, bins, baseline=zero_base,
-                      fill=True, color="magenta", alpha=0.3,
-                      label="stat. (bootstrap)")
-            ax.stairs(total_rel, bins, label="total sys",
-                      linewidth=2.0, linestyle="dotted")
+            ax.stairs(
+                rel_stat,
+                bins,
+                baseline=zero_base,
+                fill=True,
+                color="magenta",
+                alpha=0.3,
+                label="stat. (bootstrap)",
+            )
+            ax.stairs(
+                total_rel_raw,
+                bins,
+                label="total sys (raw)",
+                linewidth=1.5,
+                linestyle="dashed",
+                color="grey",
+            )
+            ax.stairs(
+                total_rel,
+                bins,
+                label="total sys (Barlow)",
+                linewidth=2.0,
+                linestyle="dotted",
+                color="black",
+            )
 
             for sv in sv_keys:
                 rel = _safe_rel_unc(sys_vars[hist_name][sv], y)
-                ax.stairs(rel, bins, label=sv, linewidth=2.0)
+                rel_raw = _safe_rel_unc(
+                    sys_vars[hist_name].get(f"{sv}_raw", sys_vars[hist_name][sv]), y
+                )
+                bsig = sys_vars[hist_name].get(f"{sv}_barlow_sig")
 
-                sax = single_axs[sv][ijpt]
-                sax.stairs(rel_stat, bins, baseline=zero_base,
-                           fill=True, color="magenta", alpha=0.3,
-                           label="stat. (bootstrap)")
-                sax.stairs(total_rel, bins, label="total sys",
-                           linewidth=2.0, linestyle="dotted")
-                sax.stairs(rel, bins, label=sv, linewidth=2.0)
+                line = ax.stairs(rel, bins, label=sv, linewidth=2.0)
+                ax.stairs(
+                    rel_raw,
+                    bins,
+                    linewidth=1.0,
+                    linestyle="dashed",
+                    color=line.get_edgecolor(),
+                    alpha=0.6,
+                )
+
+                sax = single_axs_top[sv][ijpt]
+                sax.stairs(
+                    rel_stat,
+                    bins,
+                    baseline=zero_base,
+                    fill=True,
+                    color="magenta",
+                    alpha=0.3,
+                    label="stat. (bootstrap)",
+                )
+                sax.stairs(
+                    total_rel_raw,
+                    bins,
+                    label="total sys (raw)",
+                    linewidth=1.5,
+                    linestyle="dashed",
+                    color="grey",
+                )
+                sax.stairs(
+                    total_rel,
+                    bins,
+                    label="total sys (Barlow)",
+                    linewidth=2.0,
+                    linestyle="dotted",
+                    color="black",
+                )
+                sline = sax.stairs(rel, bins, label=sv, linewidth=2.0)
+                sax.stairs(
+                    rel_raw,
+                    bins,
+                    linewidth=1.0,
+                    linestyle="dashed",
+                    color=sline.get_edgecolor(),
+                    alpha=0.6,
+                    label=f"{sv} (raw)",
+                )
                 sax.text(
-                    0.2, 0.75,
+                    0.2,
+                    0.75,
                     rf"${jpt_min} < p_{{T, jet}} < {jpt_max}$ GeV/$c$",
                     transform=sax.transAxes,
                 )
 
-        axs[-1].legend()
+                if bsig is not None:
+                    bax = single_axs_bot[sv][ijpt]
+                    bsig_clean = bsig.clone().nan_to_num_(
+                        nan=0.0, posinf=0.0, neginf=0.0
+                    )
+                    bax.stairs(
+                        bsig_clean, bins, linewidth=2.0, color=sline.get_edgecolor()
+                    )
+                    sv_threshold = (
+                        prior_barlow_threshold
+                        if sv in PRIOR_SOURCE_KEYS
+                        else barlow_threshold
+                    )
+                    if sv_threshold is not None:
+                        bax.axhline(
+                            sv_threshold, color="black", linestyle="--", linewidth=1.0
+                        )
+
+        axs[-1].legend(fontsize="small")
         combined_path = os.path.join(fig_save_dir, f"{mod}-sysQA.pdf")
         print("Saving figure to:", combined_path)
         fig.savefig(combined_path, bbox_inches="tight")
         plt.close(fig)
 
         for sv in sv_keys:
-            single_axs[sv][-1].legend()
+            single_axs_top[sv][-1].legend(fontsize="small")
             sv_path = os.path.join(fig_save_dir, f"{mod}-{sv}-sysQA.pdf")
             single_figs[sv].savefig(sv_path, bbox_inches="tight")
             plt.close(single_figs[sv])
@@ -411,16 +775,49 @@ def main():
 
     path_prefix = "outputs/histograms"
     with open("runtime-files/config.json") as _cfg_file:
-        feature_mode = json.load(_cfg_file)["feature_mode"]
+        _cfg = json.load(_cfg_file)
+    feature_mode = _cfg["feature_mode"]
+    barlow_threshold = _cfg.get("barlow_threshold", 1.0)
+    # Shared-event (prior) systematics get their own threshold; fall back to the
+    # detector one when the key is absent.
+    prior_barlow_threshold = _cfg.get("barlow_threshold_prior", barlow_threshold)
+    print(
+        f"Barlow check: detector "
+        f"{'disabled' if barlow_threshold is None else f'threshold = {barlow_threshold}'}"
+        f", prior (shared-event) "
+        f"{'disabled' if prior_barlow_threshold is None else f'threshold = {prior_barlow_threshold}'}"
+    )
 
     for var_name in common_vars + angularities:
         sys_vars, hnominal = calculate_uncertainties(
-            var_name, path_prefix=path_prefix, feature_mode=feature_mode
+            var_name,
+            path_prefix=path_prefix,
+            feature_mode=feature_mode,
+            barlow_threshold=barlow_threshold,
+            prior_barlow_threshold=prior_barlow_threshold,
         )
         save_dir = os.path.join(path_prefix, "sys_errors", feature_mode, var_name)
         save_sys_uncertainties(sys_vars, save_dir)
         fig_save_dir = os.path.join(path_prefix, "plots", feature_mode, var_name)
-        plot_uncertainties(var_name, hnominal, sys_vars, fig_save_dir)
+        plot_uncertainties(
+            var_name,
+            hnominal,
+            sys_vars,
+            fig_save_dir,
+            barlow_threshold=barlow_threshold,
+            prior_barlow_threshold=prior_barlow_threshold,
+        )
+
+    # Regenerate the LaTeX per-source uncertainty tables from the freshly saved
+    # sys_errors files. Lazy import: make_sys_var_tables imports from this module.
+    from make_sys_var_tables import generate as _make_sys_var_tables
+
+    _make_sys_var_tables(
+        feature_mode=feature_mode,
+        threshold=barlow_threshold,
+        prior_threshold=prior_barlow_threshold,
+    )
+
     print("Done!")
 
 
