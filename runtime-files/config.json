@@ -8,7 +8,7 @@
   "valid_every": 1,
   "dataseed": 0,
   "modelseed": 0,
-  "feature_mode": "bin_counts",
+  "feature_mode": "angularities",
   "input_transform": "log1p_per_channel_z_norm",
   "redo_preprocessing": false,
   "redo_datasets": true,
@@ -17,6 +17,16 @@
   "resume": false,
   "resume_from_iter": null,
   "keep_last_checkpoint_only": true,
+  "cold_start_per_iter": false,
+  "early_stop_on_convergence": true,
+  "convergence_eps": 0.005,
+  "ess_floor_frac": 0.0,
+  "step_odds_clip": {
+    "clamp_min": 0.25,
+    "clamp_max": 4.0
+  },
+  "replica_reduce": "median",
+  "replica_trim_frac": 0.1,
   "compile_forward": true,
   "compile_kwargs": {},
   "barlow_threshold": 1.0,
@@ -30,7 +40,7 @@
       256,
       256
     ],
-    "dropout_prob": 0.2,
+    "dropout_prob": 0.35,
     "early_stopping_patience": 5,
     "reweight_clamp": {
       "clamp_min": 0.1,
@@ -54,7 +64,7 @@
     "optimizer": {
       "lr": 0.001,
       "eps": 1E-8,
-      "weight_decay": 0.01,
+      "weight_decay": 0.05,
       "decoupled_weight_decay": true
     }
   },

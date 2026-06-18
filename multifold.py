@@ -537,6 +537,20 @@ def _reassemble_unfolding_weights(out_dir: Path, num_iterations: int) -> Path | 
         print(f"[reassemble] no w_unfolding_niter*.npz under {out_dir}; skipping.")
         return None
 
+    # Prune stale higher-index per-iteration files left by a prior, longer run. The
+    # caller passes the count actually completed (which, on an early stop, is < the
+    # config `num_iterations`), so any `niter{i>num_iterations}.npz` on disk is from a
+    # previous run. Without this, an early-stopped run silently splices those stale
+    # gen/reco blocks onto its own iters 0..num_iterations in w_unfolding.npz.
+    for stale in out_dir.glob("w_unfolding_niter*.npz"):
+        try:
+            idx = int(stale.stem.removeprefix("w_unfolding_niter"))
+        except ValueError:
+            continue
+        if idx > num_iterations:
+            print(f"[reassemble] removing stale {stale.name} (idx {idx} > {num_iterations}).")
+            stale.unlink()
+
     combined = out_dir / "w_unfolding.npz"
     slot = 0
     # ZIP_STORED (no compression) matches np.savez; allowZip64 + per-member
@@ -761,6 +775,46 @@ def reweigh_samples(
         offset = offset + size
 
 
+def _reset_optimizer_lr(*states, base_lr):
+    """Tier 0.1: reset each ensemble's per-replica Adam LR to the config base. The
+    ``LRScheduler`` lazily captures its ``base_lrs_`` from ``state.optimizer_state["lr"]``,
+    so without this the annealed LR carries across warm-started OmniFold iterations and
+    ratchets down run-wide to ``min_lr`` (dead by ~iter4). Cheap; works on CPU or GPU."""
+    for s in states:
+        s.optimizer_state["lr"].fill_(float(base_lr))
+
+
+def _cold_restart_state(state, build_args, *, base_lr):
+    """Tier 0.2 (opt-in): re-initialize an ensemble in place — fresh params, zeroed Adam
+    moments, base LR — keeping the module/state object identity so the prebuilt
+    grad/forward closures (and any compile cache) stay valid. ``build_args`` is the
+    ``(input, layer_sizes, cfg, device, optimizer_kwargs)`` tuple originally passed to
+    ``build_classifier``; the fresh model is built on the same device and discarded after
+    its tensors are copied in. NOTE: ``build_classifier`` also re-fits the input transform
+    (deterministic, but not free) — acceptable for an opt-in path."""
+    _, fresh = build_classifier(*build_args)
+    for k, v in fresh.params_dict.items():
+        state.params_dict[k].copy_(v.to(state.params_dict[k].device))
+    for k in ("exp_avgs", "exp_avg_sqs", "max_exp_avg_sqs", "state_steps"):
+        t = state.optimizer_state.get(k)
+        if torch.is_tensor(t):
+            t.zero_()
+    state.optimizer_state["lr"].fill_(float(base_lr))
+    rearm_replicas(state)
+    return state
+
+
+def _best_valid_median(history):
+    """Median-over-replicas of the per-replica best (min-over-epochs) valid loss, for the
+    Tier 1 convergence stop. ``history["valid_loss"]`` is a per-epoch list of (N,) host
+    tensors."""
+    vl = history.get("valid_loss", [])
+    if not vl:
+        return float("nan")
+    stk = torch.stack([torch.as_tensor(v).reshape(-1).float() for v in vl])  # (E, N)
+    return float(stk.min(dim=0).values.median())
+
+
 def run(cfg: Config) -> None:
     # Entry point for the OmniFold unfolding run. Body is the former
     # `if __name__ == "__main__"` block, factored into a callable so it can be
@@ -966,6 +1020,23 @@ def run(cfg: Config) -> None:
         device,
         optimizer_kwargs,
     )
+
+    # Tier 0.2 (opt-in): capture the per-ensemble build args so each iteration can cold-
+    # restart its classifier (fresh params + zeroed Adam). Only materialize the matched-
+    # index input slices when the flag is on (indexing allocates).
+    _cold_start = bool(cfg.get("cold_start_per_iter", False))
+    _base_lr = float(cfg.optimizer_kwargs["lr"])
+    if _cold_start:
+        detlvl_build = (detlvl_ds.input, layer_sizes, cfg, device, optimizer_kwargs)
+        miss_build = (
+            partlvl_ds.td["input"][partlvl_matched_indices],
+            layer_sizes, cfg, device, optimizer_kwargs,
+        )
+        partlvl_build = (partlvl_ds.input, layer_sizes, cfg, device, optimizer_kwargs)
+        fake_build = (
+            detlvl_ds.td["input"][detlvl_matched_indices],
+            layer_sizes, cfg, device, optimizer_kwargs,
+        )
 
     # Build the manual-loop drivers ONCE per ensemble and reuse them across every
     # OmniFold iteration (model + transform are fixed; only weights/data-weights
@@ -1216,6 +1287,12 @@ def run(cfg: Config) -> None:
             f"LR scheduler: {_lr_policy}({', '.join(f'{k}={v}' for k, v in _lr_kwargs.items())})"
         )
 
+    # Tier 2.7: per-step odds clamp for reweigh_samples. The default [1e-3, 1e3] is a 10^6
+    # range (non-binding) — tighten so each OmniFold step is a small, trustworthy nudge.
+    _step_clip = cfg.get("step_odds_clip", {"clamp_min": 0.25, "clamp_max": 4.0})
+    _step_lo, _step_hi = float(_step_clip["clamp_min"]), float(_step_clip["clamp_max"])
+    print(f"Per-step odds clamp: [{_step_lo}, {_step_hi}]")
+
     # Phase-1 diagnostics: per-iteration weight stats and training history.
     # See plan: /home/tanmaypani/.claude/plans/the-prior-reweighing-given-piped-fiddle.md
     reweight_clamp = cfg.reweight_clamp
@@ -1297,7 +1374,17 @@ def run(cfg: Config) -> None:
 
         _log_mem(f"iter {iteration + 1} start")
 
+        # Tier 0.1: re-arm the LR each iteration (states + their annealed LR warm-start;
+        # the scheduler sniffs its base from state.optimizer_state["lr"], so without this
+        # the LR ratchets down run-wide and hits min_lr by ~iter4 -> dead later iterations).
+        _reset_optimizer_lr(
+            detlvl_state, miss_scaling_state, partlvl_state, fake_scaling_state,
+            base_lr=_base_lr,
+        )
+
         detlvl_state = detlvl_state.to(device)  # page this model onto the GPU
+        if _cold_start and iteration > start_iter:
+            detlvl_state = _cold_restart_state(detlvl_state, detlvl_build, base_lr=_base_lr)
         # detlvl_history = detlvl_ensemble.fit(
         #     Adam, binary_cross_entropy_with_logits, detlvl_state,
         #     detlvl_train_loader, valid_iterator=detlvl_valid_loader,
@@ -1336,6 +1423,8 @@ def run(cfg: Config) -> None:
             reco_match_loader,
             miss_scaling_ds.weight,
             forward=predict_fwd[detlvl_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
         w_matched.mul_(miss_scaling_ds.weight[..., :n_miss_pos])
 
@@ -1346,6 +1435,8 @@ def run(cfg: Config) -> None:
             reco_fake_loader,
             w_fake,
             forward=predict_fwd[detlvl_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
 
         if save_model_states:
@@ -1364,6 +1455,10 @@ def run(cfg: Config) -> None:
         #     reco_match_reweights
         # )
         miss_scaling_state = miss_scaling_state.to(device)  # page onto the GPU
+        if _cold_start and iteration > start_iter:
+            miss_scaling_state = _cold_restart_state(
+                miss_scaling_state, miss_build, base_lr=_base_lr
+            )
         # miss_scaling_history = miss_scaling_ensemble.fit(
         #     Adam, binary_cross_entropy_with_logits, miss_scaling_state,
         #     miss_scaling_train_loader, valid_iterator=miss_scaling_valid_loader,
@@ -1395,6 +1490,8 @@ def run(cfg: Config) -> None:
             gen_miss_loader,
             w_miss,
             forward=predict_fwd[miss_scaling_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
 
         rearm_replicas(miss_scaling_state)
@@ -1440,6 +1537,10 @@ def run(cfg: Config) -> None:
         # partlvl_ds.weight[..., : prev_gen.shape[-1]].div_(w_gen_sum).mul_(n_data)
         # prev_gen = partlvl_ds.weight[..., : prev_gen.shape[-1]]
         partlvl_state = partlvl_state.to(device)  # page onto the GPU
+        if _cold_start and iteration > start_iter:
+            partlvl_state = _cold_restart_state(
+                partlvl_state, partlvl_build, base_lr=_base_lr
+            )
         # partlvl_history = partlvl_ensemble.fit(
         #     Adam, binary_cross_entropy_with_logits, partlvl_state,
         #     partlvl_train_loader, valid_iterator=partlvl_valid_loader,
@@ -1475,6 +1576,8 @@ def run(cfg: Config) -> None:
             gen_match_loader,
             fake_scaling_ds.weight,
             forward=predict_fwd[partlvl_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
         w_matched.mul_(fake_scaling_ds.weight[..., :n_fake_pos])
 
@@ -1485,6 +1588,8 @@ def run(cfg: Config) -> None:
             gen_miss_loader,
             w_miss,
             forward=predict_fwd[partlvl_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
 
         if save_model_states:
@@ -1503,6 +1608,10 @@ def run(cfg: Config) -> None:
         #     gen_match_reweights
         # )
         fake_scaling_state = fake_scaling_state.to(device)  # page onto the GPU
+        if _cold_start and iteration > start_iter:
+            fake_scaling_state = _cold_restart_state(
+                fake_scaling_state, fake_build, base_lr=_base_lr
+            )
         # fake_scaling_history = fake_scaling_ensemble.fit(
         #     Adam, binary_cross_entropy_with_logits, fake_scaling_state,
         #     fake_scaling_train_loader, valid_iterator=fake_scaling_valid_loader,
@@ -1534,6 +1643,8 @@ def run(cfg: Config) -> None:
             reco_fake_loader,
             w_fake,
             forward=predict_fwd[fake_scaling_ensemble],
+            clamp_min=_step_lo,
+            clamp_max=_step_hi,
         )
         # --- folded in place above ---
         # w_fake *= fake_reweights
@@ -1592,6 +1703,34 @@ def run(cfg: Config) -> None:
         }
         np.savez(out_dir / f"weight_stats_niter{cfg['num_iterations']}.npz", **stacked)
 
+        # --- Tier 1: principled stopping (convergence on ln2 + ESS floor) -------------
+        _ln2 = float(np.log(2.0))
+        _detlvl_bv = _best_valid_median(detlvl_history)
+        _eps = float(cfg.get("convergence_eps", 0.005))
+        _converged = _detlvl_bv >= (_ln2 - _eps)
+        _ess_floor = float(cfg.get("ess_floor_frac", 0.0))
+        _gen_ess_frac = float(np.median(iter_stats["gen/ess"]) / prev_gen.shape[-1])
+        _reco_ess_frac = float(np.median(iter_stats["reco/ess"]) / prev_reco.shape[-1])
+        print(
+            f"[stop-check] iter {iteration + 1}: detlvl best-valid(med)={_detlvl_bv:.4f} "
+            f"(ln2-eps={_ln2 - _eps:.4f})  gen_ESS={_gen_ess_frac:.3%}  "
+            f"reco_ESS={_reco_ess_frac:.3%}"
+        )
+        _ess_breach = _ess_floor > 0 and min(_gen_ess_frac, _reco_ess_frac) < _ess_floor
+        _stop_after_this_iter = cfg.get("early_stop_on_convergence", True) and (
+            _converged or _ess_breach
+        )
+        if _stop_after_this_iter:
+            _why = (
+                "detlvl valid >= ln2-eps (no separable detector-level signal)"
+                if _converged
+                else f"ESS < {_ess_floor:.0%} (weights collapsed)"
+            )
+            print(
+                f"[stop-check] STOPPING after iter {iteration + 1}: {_why}. "
+                f"Trust weights up to w_unfolding_niter{iteration + 1}.npz."
+            )
+
         for _name, _hist in (
             ("detlvl", detlvl_history),
             ("miss_scaling", miss_scaling_history),
@@ -1625,11 +1764,17 @@ def run(cfg: Config) -> None:
 
         _release_heap()
         _log_mem(f"iter {iteration + 1} end (post-trim)")
+        _last_completed_iter = iteration  # niter0..niter{iteration+1} are on disk
+
+        if _stop_after_this_iter:
+            break
 
     # Combine the streamed per-iteration files into the legacy single w_unfolding.npz
     # (arr_{2i}=gen / arr_{2i+1}=reco) that histograms.py / plot_closure.py expect.
     # RAM-flat: one iteration file loaded at a time (see _reassemble_unfolding_weights).
-    _reassemble_unfolding_weights(out_dir, cfg["num_iterations"])
+    # Cap at the iteration actually completed (an early stop ends below
+    # cfg["num_iterations"]); the reassembler prunes any stale higher-index files.
+    _reassemble_unfolding_weights(out_dir, _last_completed_iter + 1)
 
     print("Done !")
 

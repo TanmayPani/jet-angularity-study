@@ -2,14 +2,19 @@
 alternate gen-level generator (Herwig7, Pythia8, ...) via a classifier-based density
 ratio. Detector simulation is not re-run; only the part-/det-level weight column changes.
 
-CLI:
+CLI SUPERSEDED (2026-06-17): the production reweighter is now `reweight_embedding.py`
+(`--mode gen_prior --generator <gen>` and `--mode data_reco`), which uses the current
+`features/<feature_mode>/embedding/` layout and the multifold MLP/CNN classifier dispatch.
+This module's own `main()` still targets the pre-refactor `clustered_jets/embedding/...`
+path (no longer on disk) and the old 3-tuple `StatelessModule.init` API, so it is NOT
+runnable as-is — it is retained as a LIBRARY of the still-valid, path-independent helpers
+that `reweight_embedding` imports: `_odds_clipped`, `_write_arrow`, `_read_arrow`,
+`_flatten_weights_per_bin`, `_audit_feature_alignment`, `histogram_reweight`, and the
+alternate-generator table builders `prepare_herwig7` / `prepare_pythia8`.
+
+CLI (legacy, stale paths — do not run):
     python make_alt_embedding.py --generator herwig7
     python make_alt_embedding.py --generator pythia8
-
-Outputs four arrows under
-    ./datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding/unf_prior_<gen>/
-which `preprocessing.make_datasets_for_unfolding(sysvar=UNFOLDING_PRIOR_<GEN>, ...)`
-picks up unchanged. Fakes pass through unmodified.
 """
 
 import argparse

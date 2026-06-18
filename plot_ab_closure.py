@@ -60,6 +60,10 @@ with app.setup:
 
     device = _cfg.device
 
+    # Patch G: per-replica collapse mode ("mean" | "median" | "trimmed_mean").
+    replica_reduce = _cfg.get("replica_reduce", "mean")
+    replica_trim_frac = float(_cfg.get("replica_trim_frac", 0.1))
+
     source_dir = _cfg.dataset_root / "features" / feature_mode
     # multifold.py writes w_unfolding.npz, index_split.npz and config.json
     # alongside the embedding arrows for the SAME sysvar.
@@ -119,15 +123,35 @@ def truth_prof_2d(table, bins, x_var, y_obs, indices, override_weights=None):
 
 
 @app.function
+def collapse_replicas(x, dim=0):
+    """Collapse the per-replica ensemble axis to a central value, per `replica_reduce`
+    (Patch G). "median"/"trimmed_mean" are robust to a single blown-up replica; "mean"
+    is the old behavior. Central value only — replica spread keeps its plain definition."""
+    if x.dim() <= dim or x.shape[dim] == 1 or replica_reduce == "mean":
+        return x.mean(dim)
+    if replica_reduce == "median":
+        return x.median(dim=dim).values
+    if replica_reduce == "trimmed_mean":
+        _k = int(x.shape[dim] * replica_trim_frac)
+        if _k == 0:
+            return x.mean(dim)
+        _xs, _ = x.sort(dim=dim)
+        _sl = [slice(None)] * x.dim()
+        _sl[dim] = slice(_k, x.shape[dim] - _k)
+        return _xs[tuple(_sl)].mean(dim)
+    return x.mean(dim)
+
+
+@app.function
 def pull_values(num_snap, den_snap):
-    """Per-bin (n - d) / sqrt(var_n + var_d); reduces per-replica mean for batched snapshots."""
+    """Per-bin (n - d) / sqrt(var_n + var_d); collapses per-replica central value for batched snapshots."""
     n_vals = num_snap.values
     d_vals = den_snap.values
     n_var = num_snap.variances
     d_var = den_snap.variances
     if n_vals.dim() > 1:
-        n_vals = n_vals.mean(0)
-        n_var = n_var.mean(0)
+        n_vals = collapse_replicas(n_vals)
+        n_var = collapse_replicas(n_var)
     diff = n_vals - d_vals
     err = (n_var + d_var).clamp_min_(1e-30).sqrt()
     return diff / err
@@ -403,8 +427,8 @@ def _(
                 _u_vars = _u_snap.variances[:, 1:-1]
                 _t_vals = _t_snap.values[1:-1]
                 _t_vars = _t_snap.variances[1:-1]
-                _u_mean = _u_vals.mean(0)
-                _u_var = _u_vars.mean(0) + _u_vals.var(0)
+                _u_mean = collapse_replicas(_u_vals)
+                _u_var = collapse_replicas(_u_vars) + _u_vals.var(0)
                 _denom = (_u_var + _t_vars).clamp_min(1e-30)
                 _terms = ((_u_mean - _t_vals) ** 2 / _denom).nan_to_num_(
                     nan=0.0, posinf=0.0, neginf=0.0

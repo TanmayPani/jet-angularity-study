@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.5"
+__generated_with = "0.23.9"
 app = marimo.App(width="columns")
 
 with app.setup:
@@ -36,6 +36,11 @@ with app.setup:
     # NOTE: must NOT be underscore-prefixed — marimo treats leading-underscore
     # names (even in app.setup) as cell-private, so consumer cells can't see it.
     dataset_root = str(_cfg_setup.dataset_root)
+    # Patch G: how the per-replica ensemble axis is collapsed to a central value
+    # ("mean" | "median" | "trimmed_mean"). median/trimmed are robust to a single
+    # blown-up replica. Default "mean" preserves old behavior for stale snapshots.
+    replica_reduce = _cfg_setup.get("replica_reduce", "mean")
+    replica_trim_frac = float(_cfg_setup.get("replica_trim_frac", 0.1))
 
     # Target variation, read from runtime-files/config.json (cfg.sys_var resolves
     # the string value to a SysVar, defaulting to SysVar.NONE = "nominal"). Set
@@ -71,9 +76,7 @@ def profile(table, bins, cols, xcol, weights):
 def perpt_masks(table, jpt_bins):
     """Boolean row masks selecting [jpt_bins[i], jpt_bins[i+1]) per jet-pT slice."""
     pt = np.asarray(table["pt"].to_numpy())
-    return [
-        (pt >= jpt_bins[i]) & (pt < jpt_bins[i + 1]) for i in range(len(jpt_bins) - 1)
-    ]
+    return [(pt >= jpt_bins[i]) & (pt < jpt_bins[i + 1]) for i in range(len(jpt_bins) - 1)]
 
 
 @app.function
@@ -119,11 +122,7 @@ def compute_perpt_bins(
             _gen = torch.Generator().manual_seed(seed)
             _edges = bayesian_blocks(
                 torch.as_tensor(vals[_m], dtype=torch.float64),
-                weights=(
-                    torch.as_tensor(w[_m], dtype=torch.float64)
-                    if w is not None
-                    else None
-                ),
+                weights=(torch.as_tensor(w[_m], dtype=torch.float64) if w is not None else None),
                 p0=p0,
                 ranges=rng,
                 undersample=_us,
@@ -179,9 +178,7 @@ def profile_perpt(table, bins_perpt, cols, ycol, jpt_bins, weights=None, masks=N
 
 
 @app.function
-def save_hist_1d_list(
-    h1ds, prefix=".", fname_prefix="hist", batched=False, true_h1ds=None
-):
+def save_hist_1d_list(h1ds, prefix=".", fname_prefix="hist", batched=False, true_h1ds=None):
     """``save_hist_2d`` for an already-per-jet-pT list (skips unbind/[1:-1])."""
     if true_h1ds is None:
         true_h1ds = (None,) * len(h1ds)
@@ -240,9 +237,7 @@ def save_ratio_1d_list(
                 fname=fname,
                 batched=batched,
             )
-            true_ratio_snap = ratio_snapshot(
-                true_num_h1d.snapshot(), true_den_h1d.snapshot()
-            )
+            true_ratio_snap = ratio_snapshot(true_num_h1d.snapshot(), true_den_h1d.snapshot())
             save_snapshot(
                 true_ratio_snap,
                 prefix=os.path.join(prefix, "truth"),
@@ -261,14 +256,36 @@ def save_ratio_1d_list(
 
 
 @app.function
+def collapse_replicas(x, dim=0):
+    """Collapse the per-replica ensemble axis to a central value, per the
+    `replica_reduce` config knob (Patch G). "median"/"trimmed_mean" are robust to a
+    single blown-up replica corrupting the central spectrum; "mean" is the old
+    behavior. Only the central value uses this — the replica *spread* (std/var) keeps
+    its plain definition (it is the uncertainty band)."""
+    if x.dim() <= dim or x.shape[dim] == 1 or replica_reduce == "mean":
+        return x.mean(dim)
+    if replica_reduce == "median":
+        return x.median(dim=dim).values
+    if replica_reduce == "trimmed_mean":
+        _k = int(x.shape[dim] * replica_trim_frac)
+        if _k == 0:
+            return x.mean(dim)
+        _xs, _ = x.sort(dim=dim)
+        _sl = [slice(None)] * x.dim()
+        _sl[dim] = slice(_k, x.shape[dim] - _k)
+        return _xs[tuple(_sl)].mean(dim)
+    return x.mean(dim)
+
+
+@app.function
 def snapshot_state_dict(hsnap, batched=False):
     sdict = dict(
         bin_center=hsnap.bin_centers[1:-1],
         half_bin_width=hsnap.bin_widths[1:-1] / 2.0,
-        bin_count=hsnap.values[1:-1] if not batched else hsnap.values[:, 1:-1].mean(0),
+        bin_count=hsnap.values[1:-1] if not batched else collapse_replicas(hsnap.values[:, 1:-1]),
         bin_count_err=hsnap.variances[1:-1].sqrt()
         if not batched
-        else hsnap.variances[:, 1:-1].sqrt().mean(0),
+        else collapse_replicas(hsnap.variances[:, 1:-1].sqrt()),
     )
 
     if batched:
@@ -337,9 +354,7 @@ def save_ratio_2d(
                 fname=fname,
                 batched=batched,
             )
-            true_ratio_snap = ratio_snapshot(
-                true_num_h1d.snapshot(), true_den_h1d.snapshot()
-            )
+            true_ratio_snap = ratio_snapshot(true_num_h1d.snapshot(), true_den_h1d.snapshot())
             save_snapshot(
                 true_ratio_snap,
                 prefix=os.path.join(prefix, "truth"),
@@ -412,7 +427,7 @@ def _():
 
 
 @app.cell
-def _():
+def _(unf_weights):
     # Read the PREPROCESSED embedding (features/<mode>/embedding/<sysvar>/), not
     # the raw clustering output (jets/embedding/): only the preprocessed arrows
     # carry the process_table-computed angularity columns (ch_ang_*), and their
@@ -422,7 +437,18 @@ def _():
     # NB: these arrows are deleted after multifold to save space — re-run
     # preprocessing.py for the target sys_var to regenerate them.
     # _source_dir = dataset_root + "/jets/embedding"   # old (raw, no angularities)
-    _source_dir = dataset_root + "/features/" + feature_mode + "/embedding"
+
+    # bin_counts split: the softdrop observables (sd_m, sd_dR, sd_symmetry, ...) live
+    # ONLY in the angularities arrows. The bin_counts run supplies the WEIGHTS
+    # (w_unfolding.npz, read in cell TqIu); its arrows carry the (pT,dR) bin columns
+    # but no softdrop scalars. The jets are the same set in the same row order across
+    # feature modes, so the bin_counts weights apply row-for-row to the angularities
+    # observable tables (asserted below). Source observables from angularities here;
+    # `feature_mode` (the run mode, e.g. bin_counts) still labels the output dirs.
+    obs_feature_mode = "angularities"
+    # old (broke in bin_counts mode — those arrows have no sd_* columns):
+    # _source_dir = dataset_root + "/features/" + feature_mode + "/embedding"
+    _source_dir = dataset_root + "/features/" + obs_feature_mode + "/embedding"
 
     if sys_var in {SysVar.NONE, SysVar.TOWER_ET_CORRECTION, SysVar.TRACK_EFFICIENCY}:
         _input_root_dir = os.path.join(_source_dir, str(sys_var))
@@ -435,6 +461,14 @@ def _():
     _buffers.append(pa.memory_map(os.path.join(_input_root_dir, "misses.arrow")))
     _gen_misses_table = pa.ipc.open_file(_buffers[-1]).read_all()
     gen_table = pa.concat_tables((_gen_match_table, _gen_misses_table))
+
+    # Row-alignment guard: the bin_counts w_unfolding weights (unf_weights, cell TqIu)
+    # are applied to these angularities observables row-for-row, valid only if the
+    # gen-side row counts match across feature modes.
+    assert gen_table.num_rows == unf_weights.shape[1], (
+        f"gen_table rows {gen_table.num_rows} != unf_weights cols {unf_weights.shape[1]}; "
+        "angularities/bin_counts gen arrows are misaligned."
+    )
     return (gen_table,)
 
 
@@ -443,9 +477,7 @@ def _(gen_table):
     mc_tables = []
 
     if sys_var == SysVar.NONE:
-        _py6_weights = torch.as_tensor(
-            gen_table["weight"].to_numpy(), dtype=torch.float32
-        )
+        _py6_weights = torch.as_tensor(gen_table["weight"].to_numpy(), dtype=torch.float32)
 
         mc_tables.append(("pythia6", gen_table, _py6_weights))
 
@@ -455,9 +487,7 @@ def _(gen_table):
         _py8_path = os.path.join(_py8_dir, f"preproc_{_py8_file}")
         _py8_buffer = pa.memory_map(_py8_path, "rb")
         _py8_table = pa.ipc.open_file(_py8_buffer).read_all()
-        _py8_weights = torch.as_tensor(
-            _py8_table["weight"].to_numpy(), dtype=torch.float32
-        )
+        _py8_weights = torch.as_tensor(_py8_table["weight"].to_numpy(), dtype=torch.float32)
 
         mc_tables.append(("pythia8", _py8_table, _py8_weights))
 
@@ -467,9 +497,7 @@ def _(gen_table):
         _hw_path = os.path.join(_hw_dir, _hw_file)
         _hw_buffer = pa.memory_map(_hw_path, "rb")
         _hw_table = pa.ipc.open_file(_hw_buffer).read_all()
-        _hw_weights = torch.as_tensor(
-            _hw_table["weight"].to_numpy(), dtype=torch.float32
-        )
+        _hw_weights = torch.as_tensor(_hw_table["weight"].to_numpy(), dtype=torch.float32)
 
         mc_tables.append(("herwig7", _hw_table, _hw_weights))
     return (mc_tables,)
@@ -493,10 +521,14 @@ def _():
     }
     # --- old: all three priors set truth_weights and saved unfolded/truth/ratio
     # _prior_sysvars = {LIKE_DATA, HERWIG7, PYTHIA8} ---
-    _has_own_unfolding = {
-        SysVar.TOWER_ET_CORRECTION,
-        SysVar.TRACK_EFFICIENCY,
-    } | _closure_sysvars | _model_prior_sysvars
+    _has_own_unfolding = (
+        {
+            SysVar.TOWER_ET_CORRECTION,
+            SysVar.TRACK_EFFICIENCY,
+        }
+        | _closure_sysvars
+        | _model_prior_sysvars
+    )
 
     _unf_dir = os.path.join(
         dataset_root + "/features",
@@ -510,9 +542,7 @@ def _():
     # Iteration choice is owned by systematics.get_unfolding_iter (keyed by
     # sys_var); the gen-side weights are the even-indexed arrays arr_{2*iter}.
     _iteration = get_unfolding_iter(sys_var, 5)
-    unf_weights = torch.as_tensor(
-        _unf_weights_dict[f"arr_{2 * _iteration}"], dtype=torch.float32
-    )
+    unf_weights = torch.as_tensor(_unf_weights_dict[f"arr_{2 * _iteration}"], dtype=torch.float32)
 
     if sys_var in _closure_sysvars:
         # Truth weights live in the closure-variant gen-side arrows (baked by
@@ -530,9 +560,7 @@ def _():
         _gm_truth = pa.ipc.open_file(_gm_buf).read_all()
         _mi_truth = pa.ipc.open_file(_mi_buf).read_all()
         truth_weights = torch.as_tensor(
-            np.concatenate(
-                [_gm_truth["weight"].to_numpy(), _mi_truth["weight"].to_numpy()]
-            ),
+            np.concatenate([_gm_truth["weight"].to_numpy(), _mi_truth["weight"].to_numpy()]),
             dtype=torch.float32,
         )
     else:
@@ -575,8 +603,7 @@ def _(bins, gen_table, mc_tables):
     try:
         with open(_perpt_bin_file, "rb") as _f:
             bins_perpt = {
-                _c: {int(_k): _v for _k, _v in _d.items()}
-                for _c, _d in json.load(_f).items()
+                _c: {int(_k): _v for _k, _v in _d.items()} for _c, _d in json.load(_f).items()
             }
         print("Read per-pT bins from:", _perpt_bin_file)
     except Exception as _exc:
@@ -608,10 +635,7 @@ def _(bins, gen_table, mc_tables):
             bins_perpt[f"sd_{_ang}"] = bins_perpt[_ang]
         with open(_perpt_bin_file, "w") as _f:
             json.dump(
-                {
-                    _c: {str(_k): _v for _k, _v in _d.items()}
-                    for _c, _d in bins_perpt.items()
-                },
+                {_c: {str(_k): _v for _k, _v in _d.items()} for _c, _d in bins_perpt.items()},
                 _f,
                 indent=2,
             )
@@ -896,7 +920,6 @@ def _(
 
 @app.cell
 def _(
-    bins_perpt,
     gen_masks,
     gen_table,
     jpt_bins,
@@ -986,7 +1009,6 @@ def _(
 
 @app.cell
 def _(
-    bins_perpt,
     gen_masks,
     gen_table,
     jpt_bins,
@@ -1121,12 +1143,8 @@ def _():
         _n_iter = _manifest["num_iterations"]
         _gen_key = f"arr_{2 * _n_iter}"
         _reco_key = f"arr_{2 * _n_iter + 1}"
-        closure_gen_weights = torch.as_tensor(
-            _w_unfolding[_gen_key], dtype=torch.float32
-        )
-        closure_reco_weights = torch.as_tensor(
-            _w_unfolding[_reco_key], dtype=torch.float32
-        )
+        closure_gen_weights = torch.as_tensor(_w_unfolding[_gen_key], dtype=torch.float32)
+        closure_reco_weights = torch.as_tensor(_w_unfolding[_reco_key], dtype=torch.float32)
 
         print(
             f"Closure: A_gen {len(A_gen_table)} rows, "

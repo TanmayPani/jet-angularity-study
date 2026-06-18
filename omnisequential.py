@@ -1,3 +1,9 @@
+# SUPERSEDED (2026-06-17): this sequential-GP *marginal* reweighter (greedy worst-χ²
+# 1-D observable, GP-smoothed ratio, 1-D Profile gen pull-back) is structurally blind to
+# joint/correlation differences between data and reco. Production reweighting now lives in
+# `reweight_embedding.py` (`--mode data_reco`): a classifier likelihood-ratio reweighter
+# over the full joint feature vector (MLP/CNN, like multifold). Kept runnable as a legacy
+# 1-D cross-check; its `outputs/omnisequential/...` npz dumps remain valid for comparison.
 import marimo
 
 __generated_with = "0.23.9"

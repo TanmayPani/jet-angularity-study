@@ -2224,7 +2224,16 @@ def _(SysVar, angularities, get_jet_pt_bins, json, load_config, np, torch):
         )
 
 
-    return build_closure, closure_state_dict, snapshot_state_dict
+    return (
+        CLOSURE_ITER,
+        build_closure,
+        closure_state_dict,
+        histogram,
+        pa,
+        profile,
+        ratio_snapshot,
+        snapshot_state_dict,
+    )
 
 
 @app.cell
@@ -2524,6 +2533,152 @@ def _(closure_like, make_closure_dr):
         closure_like, "Pseudodata Closure", "fig_dr_grid_closure_like.pdf"
     )
     fig_dr_grid_closure_like
+    return
+
+
+@app.cell
+def _(
+    CLOSURE_ITER,
+    SysVar,
+    angularities,
+    get_jet_pt_bins,
+    histogram,
+    json,
+    load_config,
+    np,
+    pa,
+    profile,
+    ratio_snapshot,
+    torch,
+):
+    # bin_counts-route closure (LIKE_DATA only) -- UNDER-DEVELOPMENT cross-check.
+    # OBSERVABLES from the nominal angularities arrows; WEIGHTS + truth from
+    # features/bin_counts/embedding/<sysvar>. Mirrors build_closure's LIKE_DATA branch.
+    # NEW function: leaves the angularities closure pipeline + its figures untouched.
+    def build_closure_bc(sys_var=SysVar.UNFOLDING_PRIOR_LIKE_DATA, iteration=CLOSURE_ITER):
+        with open("./runtime-files/bins_p00.02_N100000.json", "rb") as _f:
+            _bins = json.load(_f)
+        _bins["pt"] = get_jet_pt_bins(SysVar.NONE)
+        for _ang in angularities:
+            _bins[f"sd_{_ang}"] = _bins[_ang]
+        _clo_jpt = _bins["pt"]
+        _npt = len(_clo_jpt) - 1
+
+        _cfg = load_config()
+        _obs_src = _cfg.dataset_root / "features" / "angularities"
+        _w_src = _cfg.dataset_root / "features" / "bin_counts"
+        _unf_dir = _w_src / "embedding" / str(sys_var)
+        _nom = _obs_src / "embedding" / str(SysVar.NONE)
+
+        _bufs = []
+
+        def _read(p):
+            _bufs.append(pa.memory_map(str(p)))
+            return pa.ipc.open_file(_bufs[-1]).read_all()
+
+        _gen_table = pa.concat_tables((_read(_nom / "gen-matches.arrow"), _read(_nom / "misses.arrow")))
+        _n_gen = len(_gen_table)
+
+        _wz = np.load(_unf_dir / "w_unfolding.npz")
+        _max_iter = (len(_wz.files) // 2) - 1
+        _it = min(iteration, _max_iter)
+        _gen_w = torch.as_tensor(_wz[f"arr_{2 * _it}"], dtype=torch.float32)
+        _wz.close()
+
+        _pb = []
+
+        def _readp(p):
+            _pb.append(pa.memory_map(str(p)))
+            return pa.ipc.open_file(_pb[-1]).read_all()
+
+        _gm = _readp(_unf_dir / "gen-matches.arrow")
+        _mi = _readp(_unf_dir / "misses.arrow")
+        _truth_w = torch.as_tensor(
+            np.concatenate([_gm["weight"].to_numpy(), _mi["weight"].to_numpy()]),
+            dtype=torch.float32,
+        )
+        _unf_w = _gen_w[:, :_n_gen]
+        print(
+            f"[closure-bc:{sys_var}] iter={_it} n_gen={_n_gen} replicas={_unf_w.shape[0]} (weights=bin_counts, obs=angularities)"
+        )
+
+        _dist = list(angularities)
+        _hist_obs = list(_dist) + [f"sd_{_v}" for _v in _dist]
+        _prof = [("ch_ang_k2_b0", "sd_symmetry"), ("sd_ch_ang_k2_b0", "sd_symmetry")]
+        for _dv in ("ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2"):
+            _prof += [(_dv, "sd_dR"), (f"sd_{_dv}", "sd_dR")]
+
+        _hu, _ht, _hr = {}, {}, {}
+        for _o in _hist_obs:
+            _u = histogram(_gen_table, _bins, ("pt", _o), _unf_w).unbind("pt")[1:-1]
+            _t = histogram(_gen_table, _bins, ("pt", _o), _truth_w).unbind("pt")[1:-1]
+            _hu[_o] = [h.snapshot() for h in _u]
+            _ht[_o] = [h.snapshot() for h in _t]
+            _hr[_o] = [ratio_snapshot(a, b) for a, b in zip(_hu[_o], _ht[_o])]
+
+        _pu, _ptr, _pr = {}, {}, {}
+        for _yo, _x in _prof:
+            _u = profile(_gen_table, _bins, ("pt", _x), _yo, _unf_w).unbind("pt")[1:-1]
+            _t = profile(_gen_table, _bins, ("pt", _x), _yo, _truth_w).unbind("pt")[1:-1]
+            _pu[(_yo, _x)] = [h.snapshot() for h in _u]
+            _ptr[(_yo, _x)] = [h.snapshot() for h in _t]
+            _pr[(_yo, _x)] = [ratio_snapshot(a, b) for a, b in zip(_pu[(_yo, _x)], _ptr[(_yo, _x)])]
+
+        return dict(
+            sys_var=str(sys_var) + " (bin_counts)",
+            iteration=_it,
+            jpt_bins=_clo_jpt,
+            n_pt=_npt,
+            hist_unf=_hu,
+            hist_truth=_ht,
+            hist_ratio=_hr,
+            prof_unf=_pu,
+            prof_truth=_ptr,
+            prof_ratio=_pr,
+            _bufs=_bufs,
+        )
+
+    return (build_closure_bc,)
+
+
+@app.cell
+def _(SysVar, build_closure_bc):
+    # Heavy: build the bin_counts-route LIKE_DATA closure data (obs=angularities,
+    # weights=bin_counts). Under-development cross-check; separate from closure_like.
+    closure_like_bc = build_closure_bc(SysVar.UNFOLDING_PRIOR_LIKE_DATA)
+    return (closure_like_bc,)
+
+
+@app.cell
+def _(closure_like_bc, make_closure_zg):
+    # zg profile closure -- DATA-LIKE, bin_counts route (UNDER DEVELOPMENT cross-check)
+    fig_zg_123_closure_like_bc = make_closure_zg(
+        closure_like_bc,
+        "Pseudodata Closure (bin_counts, in dev.)",
+        "fig_zg_123_closure_like_bincounts.pdf",
+    )
+    return
+
+
+@app.cell
+def _(closure_like_bc, make_closure_dist_grid):
+    # 2x2 distribution closure -- DATA-LIKE, bin_counts route (UNDER DEVELOPMENT cross-check)
+    fig_dist_grid_closure_like_bc = make_closure_dist_grid(
+        closure_like_bc,
+        "Pseudodata Closure (bin_counts, in dev.)",
+        "fig_dist_grid_closure_like_bincounts.pdf",
+    )
+    return
+
+
+@app.cell
+def _(closure_like_bc, make_closure_dr):
+    # sd_dR profile closure -- DATA-LIKE 3-col kappa=1, bin_counts route (UNDER DEVELOPMENT cross-check)
+    fig_dr_grid_closure_like_bc = make_closure_dr(
+        closure_like_bc,
+        "Pseudodata Closure (bin_counts, in dev.)",
+        "fig_dr_grid_closure_like_bincounts.pdf",
+    )
     return
 
 
