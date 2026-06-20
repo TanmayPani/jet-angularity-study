@@ -29,9 +29,12 @@ with app.setup:
         "ch_ang_k2_b0",
     )
 
-    from config import load_config
+    from config import load_config, config_path_from_argv
 
-    _cfg_setup = load_config()
+    # Optional positional config path (config.config_path_from_argv): `uv run
+    # histograms.py runtime-files/config.noptd.json` reads the copy; `marimo edit
+    # histograms.py` falls through to the shared runtime-files/config.json.
+    _cfg_setup = load_config(config_path_from_argv())
     feature_mode = _cfg_setup["feature_mode"]
     # NOTE: must NOT be underscore-prefixed — marimo treats leading-underscore
     # names (even in app.setup) as cell-private, so consumer cells can't see it.
@@ -541,7 +544,16 @@ def _():
     _unf_weights_dict = np.load(_unf_wts_filename)
     # Iteration choice is owned by systematics.get_unfolding_iter (keyed by
     # sys_var); the gen-side weights are the even-indexed arrays arr_{2*iter}.
-    _iteration = get_unfolding_iter(sys_var, 5)
+    # nom iteration is feature-mode-specific: with-p_T^D central = iter5 (poster);
+    # angularities_noptd central = iter2 (the no-ptd ensemble runs away by iter5,
+    # see project_noptd_iteration_denoising). The iter-systematic offsets bracket
+    # the central: with-ptd (-1, +2) -> {4, 7}; noptd (-1, +1) -> {1, 3}.
+    # _iteration = get_unfolding_iter(sys_var, 5)  # old: hardcoded nom_iter=5
+    if feature_mode == "angularities_noptd":
+        _nom_iter, _iter_off = 2, (-1, 1)
+    else:
+        _nom_iter, _iter_off = 5, (-1, 2)
+    _iteration = get_unfolding_iter(sys_var, _nom_iter, iter_sys_offsets=_iter_off)
     unf_weights = torch.as_tensor(_unf_weights_dict[f"arr_{2 * _iteration}"], dtype=torch.float32)
 
     if sys_var in _closure_sysvars:

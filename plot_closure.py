@@ -35,7 +35,7 @@ with app.setup:
     )
 
     # Switch between SAME (AB-split) and LIKE_DATA (omniseq-reweighted) closure.
-    sys_var = SysVar.UNFOLDING_PRIOR_LIKE_DATA
+    sys_var = SysVar.UNFOLDING_PRIOR_HERWIG7
 
     common_vars = ("m", "sd_m", "sd_dR", "sd_symmetry")
     angularities = (
@@ -71,7 +71,8 @@ with app.setup:
     fig_dir = Path("./outputs/closure_plots") / str(sys_var) / run_feature_mode
 
     fig_scale = 5
-    best_iter = 2
+    # best_iter = 2  # superseded: iter2 is a chi2/ndof local maximum (2.80)
+    best_iter = 2  # chi2/ndof minimum among clean iters (0.83 ~ 1); iter5-7 chi2 deflated by runaway-replica variance
 
 
 @app.function
@@ -198,7 +199,8 @@ def _():
     # with open(unf_dir / "config.json") as _f:
     #    cfg = json.load(_f)
     num_iter = 4  # cfg["num_iterations"]
-    final_iter = 2  # get_unfolding_iter(sys_var, num_iter)
+    # final_iter = 2  # get_unfolding_iter(sys_var, num_iter)
+    final_iter = 1  # chi2/ndof best clean iteration (see chi2 cell)
 
     w_unf = np.load(unf_dir / "w_unfolding.npz")
     n_arrays = len(w_unf.files)

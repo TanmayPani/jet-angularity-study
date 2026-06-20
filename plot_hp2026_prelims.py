@@ -27,40 +27,42 @@ def _():
     # mplhep. Only affects frame/ticks/font/sizes -- the mode-differentiation
     # scheme (incl/groomed colors, ^/o markers, pythia/herwig linestyles) is set
     # per-call and is untouched here. ---
-    plt.rcParams.update({
-        # STIX serif (Times-like), shared by the $...$ math labels and plain text;
-        # bundled with matplotlib (no usetex, no font install).
-        "mathtext.fontset": "stix",
-        "font.family": "STIXGeneral",
-        # base sizes; the code's named relative sizes (x-large, small, ...) scale
-        # off font.size, tick numbers take [xy]tick.labelsize.
-        "font.size": 16,
-        "axes.titlesize": 16,
-        "axes.labelsize": 20,
-        "xtick.labelsize": 15,
-        "ytick.labelsize": 15,
-        "legend.fontsize": 15,
-        # HEP ticks: inward, on all four sides, with minor ticks.
-        "xtick.direction": "in",
-        "ytick.direction": "in",
-        "xtick.top": True,
-        "ytick.right": True,
-        "xtick.minor.visible": True,
-        "ytick.minor.visible": True,
-        "xtick.major.size": 7,
-        "ytick.major.size": 7,
-        "xtick.minor.size": 4,
-        "ytick.minor.size": 4,
-        "xtick.major.width": 1.1,
-        "ytick.major.width": 1.1,
-        "xtick.minor.width": 0.8,
-        "ytick.minor.width": 0.8,
-        # heavier frame, ROOT/journal look.
-        "axes.linewidth": 1.2,
-        # keep white background for the saved PDFs.
-        "savefig.facecolor": "white",
-        "savefig.edgecolor": "white",
-    })
+    plt.rcParams.update(
+        {
+            # STIX serif (Times-like), shared by the $...$ math labels and plain text;
+            # bundled with matplotlib (no usetex, no font install).
+            "mathtext.fontset": "stix",
+            "font.family": "STIXGeneral",
+            # base sizes; the code's named relative sizes (x-large, small, ...) scale
+            # off font.size, tick numbers take [xy]tick.labelsize.
+            "font.size": 16,
+            "axes.titlesize": 16,
+            "axes.labelsize": 20,
+            "xtick.labelsize": 15,
+            "ytick.labelsize": 15,
+            "legend.fontsize": 15,
+            # HEP ticks: inward, on all four sides, with minor ticks.
+            "xtick.direction": "in",
+            "ytick.direction": "in",
+            "xtick.top": True,
+            "ytick.right": True,
+            "xtick.minor.visible": True,
+            "ytick.minor.visible": True,
+            "xtick.major.size": 7,
+            "ytick.major.size": 7,
+            "xtick.minor.size": 4,
+            "ytick.minor.size": 4,
+            "xtick.major.width": 1.1,
+            "ytick.major.width": 1.1,
+            "xtick.minor.width": 0.8,
+            "ytick.minor.width": 0.8,
+            # heavier frame, ROOT/journal look.
+            "axes.linewidth": 1.2,
+            # keep white background for the saved PDFs.
+            "savefig.facecolor": "white",
+            "savefig.edgecolor": "white",
+        }
+    )
 
     import torch
 
@@ -87,7 +89,7 @@ def _():
     var_xlabel = {
         "m": r"$M_{jet}$ (GeV)",
         "sd_m": r"$M_{jet, g}$ (GeV)",
-        "sd_dR": r"$\Delta R_{g}$",
+        "sd_dR": r"$R_{g}$",
         "sd_symmetry": r"$z_{g}$",
         "ch_ang_k1_b0.5": r"$\lambda^{\kappa = 1}_{\beta = 0.5}$ (LHA)",
         "ch_ang_k1_b1": r"$\lambda^{\kappa = 1}_{\beta = 1}$ (girth)",
@@ -101,10 +103,10 @@ def _():
 
     var_hist_ylabel = {
         "pt": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{dp_{\rm T, jet}}\,(\mathrm{GeV}/c)^{-1}$",
-        "ch_ang_k1_b0.5": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 0.5}}$ ",
-        "ch_ang_k1_b1": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 1}}$",
-        "ch_ang_k1_b2": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 1}_{\beta = 2}}$",
-        "ch_ang_k2_b0": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{\lambda^{\kappa = 2}_{\beta = 0}}$",
+        "ch_ang_k1_b0.5": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{d\lambda^{\kappa = 1}_{\beta = 0.5}}$ ",
+        "ch_ang_k1_b1": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{d\lambda^{\kappa = 1}_{\beta = 1}}$",
+        "ch_ang_k1_b2": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{d\lambda^{\kappa = 1}_{\beta = 2}}$",
+        "ch_ang_k2_b0": r"$\frac{1}{N_{jets}}\frac{dN_{jets}}{d\lambda^{\kappa = 2}_{\beta = 0}}$",
     }
 
     var_prof_ylabel = {
@@ -158,18 +160,17 @@ def _():
 
     prefix_dir = Path("./outputs/histograms")
 
-    mc_labels = ("pythia6", "pythia8", "herwig7")
+    mc_labels = ("PYTHIA6", "PYTHIA8", "HERWIG7")
     mc_hist_styles = {
-        "pythia6": {"linestyle": "dotted"},
+        "PYTHIA6": {"linestyle": "dotted"},
         # pythia8 was "dashdot", which reads as near-solid at ratio-panel scale
         # and blended with herwig7's solid line. Use an open long-dash pattern so
         # the three MC curves (dotted / long-dash / solid) stay distinguishable.
-        "pythia8": {"linestyle": (0, (3, 1.5))},
-        "herwig7": {"linestyle": "solid"},
+        "PYTHIA8": {"linestyle": (0, (3, 1.5))},
+        "HERWIG7": {"linestyle": "solid"},
     }
     mc_proxy_handles = {
-        mc: Line2D([], [], color="black", linewidth=2, **mc_hist_styles[mc])
-        for mc in mc_labels
+        mc: Line2D([], [], color="black", linewidth=2, **mc_hist_styles[mc]) for mc in mc_labels
     }
     plot_ratio_sys_err = False
     # Master switch for the data systematic-uncertainty overlays (main-panel
@@ -210,11 +211,13 @@ def _():
     # sansmath). This runs AFTER the STIX-serif block set by plot_physics, so
     # sans wins. Helvetica may not be installed; matplotlib falls back to
     # Arial → DejaVu Sans.
-    plt.rcParams.update({
-        "font.family": "sans-serif",
-        "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
-        "mathtext.fontset": "stixsans",
-    })
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
+            "mathtext.fontset": "stixsans",
+        }
+    )
     # HEP tick / frame settings are already set by plot_physics; they carry over.
 
     # Center panel = 20–30 GeV/c (bin index 2 in jpt_bins = (10,15,20,30,60))
@@ -239,18 +242,26 @@ def _():
     # ----------------------------------------------------------------------- #
     PRELIM_TEXT = "STAR Preliminary"
     PRELIM_KW = dict(
-        ha="left", va="top", fontsize="medium",
-        fontweight="bold", color="red", fontstyle="italic",
+        ha="left",
+        va="top",
+        fontsize="medium",
+        fontweight="bold",
+        color="red",
+        fontstyle="italic",
     )
-    SYSTEM_INFO_TEXT = "\n".join((
-        r"$p$+$p$ @ $\sqrt{s}=200$ GeV",
-        r"anti-$k_{\rm T}$ full jets, $R=0.4$",
-        r"SoftDrop $z_{\rm cut} = 0.2$, $\beta = 0$",
-    ))
-    KINEMATIC_CUTS_TEXT = "\n".join((
-        r"$| \eta_{\rm jet}| + R < 1.0$",
-        r"$N^{\rm constit.}_{\rm charged, jet} > 1$",
-    ))
+    SYSTEM_INFO_TEXT = "\n".join(
+        (
+            r"$p$+$p$ @ $\sqrt{s}=200$ GeV",
+            r"anti-$k_{\rm T}$ full jets, $R=0.4$",
+            r"SoftDrop $z_{\rm cut} = 0.2$, $\beta = 0$",
+        )
+    )
+    KINEMATIC_CUTS_TEXT = "\n".join(
+        (
+            r"$| \eta_{\rm jet}| + R < 1.0$",
+            r"$N^{\rm const.}_{\rm charged, jet} > 1$",
+        )
+    )
     LEGEND_KW = dict(frameon=False, fontsize="small")
 
 
@@ -267,11 +278,18 @@ def _():
         return (
             Patch(facecolor=color, alpha=0.5, edgecolor="none"),
             Line2D(
-                [], [], color=color, marker=marker, linestyle="-",
-                linewidth=1.2, markersize=5, markerfacecolor=color,
+                [],
+                [],
+                color=color,
+                marker=marker,
+                linestyle="-",
+                linewidth=1.2,
+                markersize=5,
+                markerfacecolor=color,
                 markeredgecolor="white",
             ),
         )
+
 
     POSTER_LEGEND_HANDLES = [
         _data_legend_proxy("red", "o"),
@@ -359,7 +377,6 @@ def _(
         )
 
 
-
     def draw_profile_panels(ax_main, ax_incl, ax_sd, var_name, x_var_name, jpt_true):
         """Draw the SD + inclusive <lambda> data points (with sys), the MC profile curves,
         and the two MC/Data ratio panels with data sys-bands. Returns the {label: handle}
@@ -368,46 +385,105 @@ def _(
         ax_arts = {}
         ax_arts.update(
             plot_profile_single(
-                ax_main, "errorbar",
-                file_path=prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
-                sys_err_path=prefix_dir / "sys_errors" / feature_mode / var_name / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
-                color="red", marker="o", label="{SD}",
+                ax_main,
+                "errorbar",
+                file_path=prefix_dir
+                / str(SysVar.NONE)
+                / feature_mode
+                / var_name
+                / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
+                sys_err_path=prefix_dir
+                / "sys_errors"
+                / feature_mode
+                / var_name
+                / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
+                color="red",
+                marker="o",
+                label="{SD}",
             )
         )
         ax_arts.update(
             plot_profile_single(
-                ax_main, "errorbar",
-                file_path=prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
-                sys_err_path=prefix_dir / "sys_errors" / feature_mode / var_name / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
-                color="blue", marker="^", label="{incl.}",
+                ax_main,
+                "errorbar",
+                file_path=prefix_dir
+                / str(SysVar.NONE)
+                / feature_mode
+                / var_name
+                / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
+                sys_err_path=prefix_dir
+                / "sys_errors"
+                / feature_mode
+                / var_name
+                / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
+                color="blue",
+                marker="^",
+                label="{incl.}",
             )
         )
         for mc in mc_labels:
             plot_profile_single(
-                ax_main, "plot",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
-                label="".join(("{", mc, "}")), color="red", **(mc_hist_styles[mc]),
+                ax_main,
+                "plot",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"prof_sd_vs_{x_var_name}_jpt{jpt_true}.pt",
+                label="".join(("{", mc, "}")),
+                color="red",
+                **(mc_hist_styles[mc]),
             )
             plot_profile_single(
-                ax_main, "plot",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
-                color="blue", **(mc_hist_styles[mc]),
+                ax_main,
+                "plot",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"prof_incl_vs_{x_var_name}_jpt{jpt_true}.pt",
+                color="blue",
+                **(mc_hist_styles[mc]),
             )
             plot_hist_single(
-                ax_sd, "errorbar",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"ratio_prof_sd_vs_{x_var_name}_data_vs_{mc}_jpt{jpt_true}.pt",
-                sys_err_path=None, color="red", label=mc, **(mc_hist_styles[mc]),
+                ax_sd,
+                "errorbar",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"ratio_prof_sd_vs_{x_var_name}_data_vs_{mc.casefold()}_jpt{jpt_true}.pt",
+                sys_err_path=None,
+                color="red",
+                label=mc,
+                **(mc_hist_styles[mc]),
             )
             plot_hist_single(
-                ax_incl, "errorbar",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"ratio_prof_incl_vs_{x_var_name}_data_vs_{mc}_jpt{jpt_true}.pt",
-                sys_err_path=None, color="blue", label=mc, **(mc_hist_styles[mc]),
+                ax_incl,
+                "errorbar",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"ratio_prof_incl_vs_{x_var_name}_data_vs_{mc.casefold()}_jpt{jpt_true}.pt",
+                sys_err_path=None,
+                color="blue",
+                label=mc,
+                **(mc_hist_styles[mc]),
             )
         for ax_r, pfx, clr in ((ax_incl, "prof_incl_vs", "blue"), (ax_sd, "prof_sd_vs", "red")):
             plot_data_sys_band(
                 ax_r,
-                prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"{pfx}_{x_var_name}_jpt{jpt_true}.pt",
-                prefix_dir / "sys_errors" / feature_mode / var_name / f"{pfx}_{x_var_name}_jpt{jpt_true}.pt",
+                prefix_dir
+                / str(SysVar.NONE)
+                / feature_mode
+                / var_name
+                / f"{pfx}_{x_var_name}_jpt{jpt_true}.pt",
+                prefix_dir
+                / "sys_errors"
+                / feature_mode
+                / var_name
+                / f"{pfx}_{x_var_name}_jpt{jpt_true}.pt",
                 color=clr,
             )
             ax_r.axhline(y=1, linewidth=2, color="black", linestyle="--", alpha=0.3)
@@ -421,40 +497,91 @@ def _(
         ax_arts = {}
         ax_arts.update(
             plot_hist_single(
-                ax_main, "errorbar",
-                file_path=prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"hist_sd_ang_jpt{jpt_true}.pt",
-                sys_err_path=prefix_dir / "sys_errors" / feature_mode / var_name / f"hist_sd_ang_jpt{jpt_true}.pt",
-                color="red", label="groomed",
+                ax_main,
+                "errorbar",
+                file_path=prefix_dir
+                / str(SysVar.NONE)
+                / feature_mode
+                / var_name
+                / f"hist_sd_ang_jpt{jpt_true}.pt",
+                sys_err_path=prefix_dir
+                / "sys_errors"
+                / feature_mode
+                / var_name
+                / f"hist_sd_ang_jpt{jpt_true}.pt",
+                color="red",
+                label="groomed",
             )
         )
         ax_arts.update(
             plot_hist_single(
-                ax_main, "errorbar",
-                file_path=prefix_dir / str(SysVar.NONE) / feature_mode / var_name / f"hist_ang_jpt{jpt_true}.pt",
-                sys_err_path=prefix_dir / "sys_errors" / feature_mode / var_name / f"hist_ang_jpt{jpt_true}.pt",
-                color="blue", marker="^", label="incl.",
+                ax_main,
+                "errorbar",
+                file_path=prefix_dir
+                / str(SysVar.NONE)
+                / feature_mode
+                / var_name
+                / f"hist_ang_jpt{jpt_true}.pt",
+                sys_err_path=prefix_dir
+                / "sys_errors"
+                / feature_mode
+                / var_name
+                / f"hist_ang_jpt{jpt_true}.pt",
+                color="blue",
+                marker="^",
+                label="incl.",
             )
         )
         for mc in mc_labels:
             plot_hist_single(
-                ax_main, "plot",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"hist_sd_ang_jpt{jpt_true}.pt",
-                color="red", label=f"{mc} (groomed)", **(mc_hist_styles[mc]),
+                ax_main,
+                "plot",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"hist_sd_ang_jpt{jpt_true}.pt",
+                color="red",
+                label=f"{mc} (groomed)",
+                **(mc_hist_styles[mc]),
             )
             plot_hist_single(
-                ax_main, "plot",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"hist_ang_jpt{jpt_true}.pt",
-                color="blue", label=f"{mc} (incl.)", **(mc_hist_styles[mc]),
+                ax_main,
+                "plot",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"hist_ang_jpt{jpt_true}.pt",
+                color="blue",
+                label=f"{mc} (incl.)",
+                **(mc_hist_styles[mc]),
             )
             plot_hist_single(
-                ax_incl, "errorbar",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"ratio_ang_data_vs_{mc}_jpt{jpt_true}.pt",
-                sys_err_path=None, color="blue", label=mc, **(mc_hist_styles[mc]),
+                ax_incl,
+                "errorbar",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"ratio_ang_data_vs_{mc.casefold()}_jpt{jpt_true}.pt",
+                sys_err_path=None,
+                color="blue",
+                label=mc,
+                **(mc_hist_styles[mc]),
             )
             plot_hist_single(
-                ax_sd, "errorbar",
-                file_path=prefix_dir / mc / feature_mode / var_name / f"ratio_sd_ang_data_vs_{mc}_jpt{jpt_true}.pt",
-                sys_err_path=None, color="red", label=mc, **(mc_hist_styles[mc]),
+                ax_sd,
+                "errorbar",
+                file_path=prefix_dir
+                / mc.casefold()
+                / feature_mode
+                / var_name
+                / f"ratio_sd_ang_data_vs_{mc.casefold()}_jpt{jpt_true}.pt",
+                sys_err_path=None,
+                color="red",
+                label=mc,
+                **(mc_hist_styles[mc]),
             )
         for ax_r, stem, clr in ((ax_incl, "hist_ang", "blue"), (ax_sd, "hist_sd_ang", "red")):
             plot_data_sys_band(
@@ -474,9 +601,12 @@ def _(
         pass set_ratio_ylabels=(column is first) so only column 0 carries the ratio ylabels."""
         prune_ratio_panel_yticks(np.array([[axs_col[0]], [axs_col[1]], [axs_col[2]]]))
         if set_ratio_ylabels:
-            axs_col[1].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large")
-            axs_col[2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
-
+            axs_col[1].set_ylabel(
+                r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+            )
+            axs_col[2].set_ylabel(
+                r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large"
+            )
 
     return (
         draw_dist_panels,
@@ -507,11 +637,11 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k1_b0.5"
     fig_dist_ch_ang_k1_b0_5 = plt.figure(figsize=(6.5, 10))
     _axs = fig_dist_ch_ang_k1_b0_5.subplots(
-        3, 1,
+        3,
+        1,
         height_ratios=[3, 1, 1],
         sharex=True,
         gridspec_kw=dict(hspace=0),
@@ -537,26 +667,39 @@ def _(
     # --- annotation block (inlined from annotate_corner) ---
     _ax_main.text(0.55, 0.97, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.98, 
-        SYSTEM_INFO_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", 
+        0.03,
+        0.98,
+        SYSTEM_INFO_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
         va="top",
     )
     _ax_main.text(
-        0.3, 0.25, 
-        KINEMATIC_CUTS_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", va="top",
+        0.3,
+        0.25,
+        KINEMATIC_CUTS_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
     )
-    _ax_main.text(0.2, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.2,
+        0.1,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, DIST_LEGEND_LABELS,
+        POSTER_LEGEND_HANDLES,
+        DIST_LEGEND_LABELS,
         **LEGEND_KW,
-        loc='best', bbox_to_anchor=(0.6, 0.6, 0.3, 0.3)
-        #loc="lower right", bbox_to_anchor=(0.99, 0.99),
+        loc="best",
+        bbox_to_anchor=(0.6, 0.6, 0.3, 0.3),
+        # loc="lower right", bbox_to_anchor=(0.99, 0.99),
     )
 
     _axs[0].set_ylabel(var_hist_ylabel[_var_name], fontsize="xx-large")
@@ -591,11 +734,11 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k1_b1"
     fig_dist_ch_ang_k1_b1 = plt.figure(figsize=(6.5, 10))
     _axs = fig_dist_ch_ang_k1_b1.subplots(
-        3, 1,
+        3,
+        1,
         height_ratios=[3, 1, 1],
         sharex=True,
         gridspec_kw=dict(hspace=0),
@@ -621,26 +764,39 @@ def _(
     # --- annotation block (inlined from annotate_corner) ---
     _ax_main.text(0.55, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.98, 
-        SYSTEM_INFO_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", 
+        0.03,
+        0.98,
+        SYSTEM_INFO_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
         va="top",
     )
     _ax_main.text(
-        0.65, 0.9, 
-        KINEMATIC_CUTS_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", va="top",
+        0.65,
+        0.9,
+        KINEMATIC_CUTS_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
     )
-    _ax_main.text(0.45, 0.73, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.45,
+        0.73,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, DIST_LEGEND_LABELS,
+        POSTER_LEGEND_HANDLES,
+        DIST_LEGEND_LABELS,
         **LEGEND_KW,
-        loc='best', bbox_to_anchor=(0.5, 0.0, 0.5, 0.5)
-        #loc="lower right", bbox_to_anchor=(0.99, 0.99),
+        loc="best",
+        bbox_to_anchor=(0.5, 0.0, 0.5, 0.5),
+        # loc="lower right", bbox_to_anchor=(0.99, 0.99),
     )
 
     _axs[0].set_ylabel(var_hist_ylabel[_var_name], fontsize="xx-large")
@@ -675,11 +831,11 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k1_b2"
     fig_dist_ch_ang_k1_b2 = plt.figure(figsize=(6.5, 10))
     _axs = fig_dist_ch_ang_k1_b2.subplots(
-        3, 1,
+        3,
+        1,
         height_ratios=[3, 1, 1],
         sharex=True,
         gridspec_kw=dict(hspace=0),
@@ -705,26 +861,39 @@ def _(
     # --- annotation block (inlined from annotate_corner) ---
     _ax_main.text(0.55, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.98, 
-        SYSTEM_INFO_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", 
+        0.03,
+        0.98,
+        SYSTEM_INFO_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
         va="top",
     )
     _ax_main.text(
-        0.03, 0.4, 
-        KINEMATIC_CUTS_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", va="top",
+        0.03,
+        0.4,
+        KINEMATIC_CUTS_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
     )
-    _ax_main.text(0.03, 0.25, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.03,
+        0.25,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, DIST_LEGEND_LABELS,
+        POSTER_LEGEND_HANDLES,
+        DIST_LEGEND_LABELS,
         **LEGEND_KW,
-        loc='best', bbox_to_anchor=(0.5, 0.5, 0.5, 0.5)
-        #loc="lower right", bbox_to_anchor=(0.99, 0.99),
+        loc="best",
+        bbox_to_anchor=(0.5, 0.5, 0.5, 0.5),
+        # loc="lower right", bbox_to_anchor=(0.99, 0.99),
     )
 
 
@@ -760,11 +929,11 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k2_b0"
     fig_dist_ch_ang_k2_b0 = plt.figure(figsize=(6.5, 10))
     _axs = fig_dist_ch_ang_k2_b0.subplots(
-        3, 1,
+        3,
+        1,
         height_ratios=[3, 1, 1],
         sharex=True,
         gridspec_kw=dict(hspace=0),
@@ -790,26 +959,39 @@ def _(
     # --- annotation block (inlined from annotate_corner) ---
     _ax_main.text(0.55, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.98, 
-        SYSTEM_INFO_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", 
+        0.03,
+        0.98,
+        SYSTEM_INFO_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
         va="top",
     )
     _ax_main.text(
-        0.7, 0.9, 
-        KINEMATIC_CUTS_TEXT, 
-        transform=_ax_main.transAxes, 
-        ha="left", va="top",
+        0.7,
+        0.9,
+        KINEMATIC_CUTS_TEXT,
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
     )
-    _ax_main.text(0.45, 0.73, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.45,
+        0.73,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, DIST_LEGEND_LABELS,
+        POSTER_LEGEND_HANDLES,
+        DIST_LEGEND_LABELS,
         **LEGEND_KW,
-        loc='best', bbox_to_anchor=(0.5, 0.0, 0.5, 0.5)
-        #loc="lower right", bbox_to_anchor=(0.99, 0.99),
+        loc="best",
+        bbox_to_anchor=(0.5, 0.0, 0.5, 0.5),
+        # loc="lower right", bbox_to_anchor=(0.99, 0.99),
     )
 
 
@@ -852,7 +1034,9 @@ def _(
     _var_name = "ch_ang_k1_b0.5"
     _x_var_name = "sd_dR"
     fig_prof_ch_ang_k1_b0_5 = plt.figure(figsize=(6, 10))
-    _axs = fig_prof_ch_ang_k1_b0_5.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+    _axs = fig_prof_ch_ang_k1_b0_5.subplots(
+        3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+    )
     _ax_main, _ax_incl, _ax_sd = _axs[0], _axs[1], _axs[2]
     _jpt_true = CENTER_JPT
     _ijpt = _jpt_true - 1
@@ -887,7 +1071,8 @@ def _(
     # --- annotation block (matches single-jetpt histogram cells) ---
     _ax_main.text(0.5, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.95,
+        0.03,
+        0.95,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
@@ -895,13 +1080,22 @@ def _(
     )
 
     _ax_main.text(
-        0.2, 0.25,
+        0.2,
+        0.25,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
-    _ax_main.text(0.1, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.1,
+        0.1,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _leg_loc, _leg_bbox = {
@@ -912,8 +1106,7 @@ def _(
 
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-        loc=_leg_loc, bbox_to_anchor=_leg_bbox, **LEGEND_KW
+        POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS, loc=_leg_loc, bbox_to_anchor=_leg_bbox, **LEGEND_KW
     )
 
     _axs[0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
@@ -955,7 +1148,9 @@ def _(
     _var_name = "ch_ang_k1_b1"
     _x_var_name = "sd_dR"
     fig_prof_ch_ang_k1_b1 = plt.figure(figsize=(6, 10))
-    _axs = fig_prof_ch_ang_k1_b1.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+    _axs = fig_prof_ch_ang_k1_b1.subplots(
+        3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+    )
     _ax_main, _ax_incl, _ax_sd = _axs[0], _axs[1], _axs[2]
     _jpt_true = CENTER_JPT
     _ijpt = _jpt_true - 1
@@ -990,7 +1185,8 @@ def _(
     # --- annotation block (matches single-jetpt histogram cells) ---
     _ax_main.text(0.5, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.95,
+        0.03,
+        0.95,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
@@ -998,14 +1194,22 @@ def _(
     )
 
     _ax_main.text(
-        0.03, 0.73,
+        0.03,
+        0.73,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
-    _ax_main.text(0.03, 0.58, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
-
+    _ax_main.text(
+        0.03,
+        0.58,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _leg_loc, _leg_bbox = {
@@ -1015,8 +1219,11 @@ def _(
     }.get(_x_var_name, ("upper right", (0.99, 0.99)))
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-        loc=_leg_loc, bbox_to_anchor=_leg_bbox, **LEGEND_KW,
+        POSTER_LEGEND_HANDLES,
+        PROF_LEGEND_LABELS,
+        loc=_leg_loc,
+        bbox_to_anchor=_leg_bbox,
+        **LEGEND_KW,
     )
 
     _axs[0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
@@ -1058,7 +1265,9 @@ def _(
     _var_name = "ch_ang_k1_b2"
     _x_var_name = "sd_dR"
     fig_prof_ch_ang_k1_b2 = plt.figure(figsize=(6, 10))
-    _axs = fig_prof_ch_ang_k1_b2.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+    _axs = fig_prof_ch_ang_k1_b2.subplots(
+        3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+    )
     _ax_main, _ax_incl, _ax_sd = _axs[0], _axs[1], _axs[2]
     _jpt_true = CENTER_JPT
     _ijpt = _jpt_true - 1
@@ -1093,7 +1302,8 @@ def _(
     # --- annotation block (matches single-jetpt histogram cells) ---
     _ax_main.text(0.5, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.03, 0.94,
+        0.03,
+        0.94,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
@@ -1101,13 +1311,22 @@ def _(
     )
 
     _ax_main.text(
-        0.65, 0.89,
+        0.65,
+        0.89,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
-    _ax_main.text(0.2, 0.71, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
+    _ax_main.text(
+        0.2,
+        0.71,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="large",
+    )
 
 
     _leg_loc, _leg_bbox = {
@@ -1117,8 +1336,11 @@ def _(
     }.get(_x_var_name, ("upper right", (0.99, 0.99)))
 
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-        loc=_leg_loc, bbox_to_anchor=_leg_bbox, **LEGEND_KW,
+        POSTER_LEGEND_HANDLES,
+        PROF_LEGEND_LABELS,
+        loc=_leg_loc,
+        bbox_to_anchor=_leg_bbox,
+        **LEGEND_KW,
     )
 
     _axs[0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
@@ -1195,26 +1417,47 @@ def _(
     # --- annotation block (separate text blocks, matches sd_dR profile cells) ---
     _ax_main.text(0.52, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.02, 0.98,
+        0.02,
+        0.98,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
     _ax_main.text(
-        0.65, 0.93,
+        0.65,
+        0.93,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
-    _ax_main.text(0.32, 0.77, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
+    _ax_main.text(
+        0.32,
+        0.77,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="x-large",
+    )
 
     _leg1 = _ax_main.legend(
-        POSTER_LEGEND_HANDLES[:2], PROF_LEGEND_LABELS[:2], loc="best", bbox_to_anchor=(0.0, 0.06, 0.5, 0.5), ncols=2, columnspacing=1, **LEGEND_KW
+        POSTER_LEGEND_HANDLES[:2],
+        PROF_LEGEND_LABELS[:2],
+        loc="best",
+        bbox_to_anchor=(0.0, 0.06, 0.5, 0.5),
+        ncols=2,
+        columnspacing=1,
+        **LEGEND_KW,
     )
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES[2:], PROF_LEGEND_LABELS[2:], loc="best", bbox_to_anchor=(0.0, 0.0, 0.5, 0.5), ncols=3, **LEGEND_KW
+        POSTER_LEGEND_HANDLES[2:],
+        PROF_LEGEND_LABELS[2:],
+        loc="best",
+        bbox_to_anchor=(0.0, 0.0, 0.5, 0.5),
+        ncols=3,
+        **LEGEND_KW,
     )
     _ax_main.add_artist(_leg1)
     _axs[0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
@@ -1287,27 +1530,47 @@ def _(
     # --- annotation block (separate text blocks, matches sd_dR profile cells) ---
     _ax_main.text(0.52, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.02, 0.98,
+        0.02,
+        0.98,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
     _ax_main.text(
-        0.65, 0.93,
+        0.65,
+        0.93,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
 
-    _ax_main.text(0.03, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
+    _ax_main.text(
+        0.03,
+        0.1,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="x-large",
+    )
 
     _leg1 = _ax_main.legend(
-        POSTER_LEGEND_HANDLES[:2], PROF_LEGEND_LABELS[:2], loc="best", bbox_to_anchor=(0.49, 0.25, 0.5, 0.5), **LEGEND_KW
+        POSTER_LEGEND_HANDLES[:2],
+        PROF_LEGEND_LABELS[:2],
+        loc="best",
+        bbox_to_anchor=(0.49, 0.25, 0.5, 0.5),
+        **LEGEND_KW,
     )
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES[2:], PROF_LEGEND_LABELS[2:], loc="best", bbox_to_anchor=(0.5, 0.31, 0.5, 0.5), ncols=3, columnspacing=1, **LEGEND_KW
+        POSTER_LEGEND_HANDLES[2:],
+        PROF_LEGEND_LABELS[2:],
+        loc="best",
+        bbox_to_anchor=(0.5, 0.31, 0.5, 0.5),
+        ncols=3,
+        columnspacing=1,
+        **LEGEND_KW,
     )
     _ax_main.add_artist(_leg1)
 
@@ -1385,27 +1648,47 @@ def _(
     # --- annotation block (separate text blocks, matches sd_dR profile cells) ---
     _ax_main.text(0.52, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
     _ax_main.text(
-        0.02, 0.98,
+        0.02,
+        0.98,
         SYSTEM_INFO_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
     _ax_main.text(
-        0.65, 0.93,
+        0.65,
+        0.93,
         KINEMATIC_CUTS_TEXT,
         transform=_ax_main.transAxes,
         ha="left",
         va="top",
     )
-    _ax_main.text(0.03, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
+    _ax_main.text(
+        0.03,
+        0.1,
+        pt_label(_jpt_true),
+        transform=_ax_main.transAxes,
+        ha="left",
+        va="top",
+        fontsize="x-large",
+    )
 
 
     _leg1 = _ax_main.legend(
-        POSTER_LEGEND_HANDLES[:2], PROF_LEGEND_LABELS[:2], loc="best", bbox_to_anchor=(0.49, 0.23, 0.5, 0.5), **LEGEND_KW
+        POSTER_LEGEND_HANDLES[:2],
+        PROF_LEGEND_LABELS[:2],
+        loc="best",
+        bbox_to_anchor=(0.49, 0.23, 0.5, 0.5),
+        **LEGEND_KW,
     )
     _ax_main.legend(
-        POSTER_LEGEND_HANDLES[2:], PROF_LEGEND_LABELS[2:], loc="best", bbox_to_anchor=(0.5, 0.3, 0.5, 0.5), ncols=3, columnspacing=1, **LEGEND_KW
+        POSTER_LEGEND_HANDLES[2:],
+        PROF_LEGEND_LABELS[2:],
+        loc="best",
+        bbox_to_anchor=(0.5, 0.3, 0.5, 0.5),
+        ncols=3,
+        columnspacing=1,
+        **LEGEND_KW,
     )
     _ax_main.add_artist(_leg1)
 
@@ -1445,7 +1728,6 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k2_b0"
     _x_var_name = "sd_symmetry"
     _jpt_trues = [1, 2]
@@ -1453,14 +1735,23 @@ def _(
 
     fig_zg_12 = plt.figure(figsize=(6 * _n, 10))
     if _n == 1:
-        _axs_raw = fig_zg_12.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+        _axs_raw = fig_zg_12.subplots(
+            3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+        )
         _col_axs = [_axs_raw]
     else:
-        _axs_raw = fig_zg_12.subplots(3, _n, height_ratios=[3, 1, 1], sharey="row", sharex="col", squeeze=False, gridspec_kw=dict(hspace=0, wspace=0))
+        _axs_raw = fig_zg_12.subplots(
+            3,
+            _n,
+            height_ratios=[3, 1, 1],
+            sharey="row",
+            sharex="col",
+            squeeze=False,
+            gridspec_kw=dict(hspace=0, wspace=0),
+        )
         _col_axs = [_axs_raw[:, _k] for _k in range(_n)]
 
     for _k, _jpt_true in enumerate(_jpt_trues):
-
         _ax_main, _ax_incl, _ax_sd = _col_axs[_k][0], _col_axs[_k][1], _col_axs[_k][2]
         _ijpt = _jpt_true - 1
 
@@ -1501,22 +1792,35 @@ def _(
         if _is_first:
             _ax_main.text(0.03, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
             _ax_main.text(
-                0.4, 0.90,
+                0.4,
+                0.90,
                 SYSTEM_INFO_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
             _col_axs[_k][0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
 
         if _is_second:
             _ax_main.text(
-                0.1, 0.9,
+                0.1,
+                0.9,
                 KINEMATIC_CUTS_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
 
         # pt label in every column (each its own jet-pt bin)
-        _ax_main.text(0.03, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
-
+        _ax_main.text(
+            0.03,
+            0.1,
+            pt_label(_jpt_true),
+            transform=_ax_main.transAxes,
+            ha="left",
+            va="top",
+            fontsize="x-large",
+        )
 
         _leg_loc, _leg_bbox = {
             "sd_dR": ("lower right", None),
@@ -1526,24 +1830,31 @@ def _(
 
         if _is_last:
             _ax_main.legend(
-                POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-                loc=_leg_loc, bbox_to_anchor=_leg_bbox, **{**LEGEND_KW, "fontsize": "small"},
+                POSTER_LEGEND_HANDLES,
+                PROF_LEGEND_LABELS,
+                loc=_leg_loc,
+                bbox_to_anchor=_leg_bbox,
+                **{**LEGEND_KW, "fontsize": "small"},
             )
 
         prune_ratio_panel_yticks(np.array([[_col_axs[_k][0]], [_col_axs[_k][1]], [_col_axs[_k][2]]]))
 
 
-    _col_axs[0][1].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large")
+    _col_axs[0][1].set_ylabel(
+        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+    )
     _col_axs[0][2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
 
     # --- mirror the full left-side y-axis (ticks, tick numbers, axis label) onto
     #     the right outer side of the last column ---
     _last = _n - 1
-    for _r, _rlabel in enumerate((
-        var_prof_ylabel[_var_name],
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
-    )):
+    for _r, _rlabel in enumerate(
+        (
+            var_prof_ylabel[_var_name],
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
+        )
+    ):
         _rax = _col_axs[_last][_r]
         _rax.tick_params(axis="y", which="both", right=True, labelright=True)
         _rax.yaxis.set_label_position("right")
@@ -1582,7 +1893,6 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k2_b0"
     _x_var_name = "sd_symmetry"
     _jpt_trues = [2, 3]
@@ -1590,14 +1900,23 @@ def _(
 
     fig_zg_23 = plt.figure(figsize=(6 * _n, 10))
     if _n == 1:
-        _axs_raw = fig_zg_23.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+        _axs_raw = fig_zg_23.subplots(
+            3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+        )
         _col_axs = [_axs_raw]
     else:
-        _axs_raw = fig_zg_23.subplots(3, _n, height_ratios=[3, 1, 1], sharey="row", sharex="col", squeeze=False, gridspec_kw=dict(hspace=0, wspace=0))
+        _axs_raw = fig_zg_23.subplots(
+            3,
+            _n,
+            height_ratios=[3, 1, 1],
+            sharey="row",
+            sharex="col",
+            squeeze=False,
+            gridspec_kw=dict(hspace=0, wspace=0),
+        )
         _col_axs = [_axs_raw[:, _k] for _k in range(_n)]
 
     for _k, _jpt_true in enumerate(_jpt_trues):
-
         _ax_main, _ax_incl, _ax_sd = _col_axs[_k][0], _col_axs[_k][1], _col_axs[_k][2]
         _ijpt = _jpt_true - 1
 
@@ -1627,7 +1946,7 @@ def _(
             if _ax_main.get_yscale() == "log":
                 _ax_main.set_ylim(_hr_lo, _hr_hi * 5.0)
             else:
-                _ax_main.set_ylim(_hr_lo, _hr_hi + 0.0*(_hr_hi - _hr_lo))
+                _ax_main.set_ylim(_hr_lo, _hr_hi + 0.0 * (_hr_hi - _hr_lo))
 
         # --- annotation distributed across columns: system-info -> first column,
         #     kinematic cuts -> second column, legend -> last column, pt per column ---
@@ -1638,22 +1957,35 @@ def _(
         if _is_first:
             _ax_main.text(0.03, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
             _ax_main.text(
-                0.03, 0.93,
+                0.03,
+                0.93,
                 SYSTEM_INFO_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
             _col_axs[_k][0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
 
         if _is_second:
             _ax_main.text(
-                0.1, 0.9,
+                0.1,
+                0.9,
                 KINEMATIC_CUTS_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
 
         # pt label in every column (each its own jet-pt bin)
-        _ax_main.text(0.33, 0.7, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
-
+        _ax_main.text(
+            0.33,
+            0.7,
+            pt_label(_jpt_true),
+            transform=_ax_main.transAxes,
+            ha="left",
+            va="top",
+            fontsize="x-large",
+        )
 
         _leg_loc, _leg_bbox = {
             "sd_dR": ("lower right", None),
@@ -1663,24 +1995,31 @@ def _(
 
         if _is_last:
             _ax_main.legend(
-                POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-                loc=_leg_loc, bbox_to_anchor=_leg_bbox, **{**LEGEND_KW, "fontsize": "x-small"},
+                POSTER_LEGEND_HANDLES,
+                PROF_LEGEND_LABELS,
+                loc=_leg_loc,
+                bbox_to_anchor=_leg_bbox,
+                **{**LEGEND_KW, "fontsize": "x-small"},
             )
 
         prune_ratio_panel_yticks(np.array([[_col_axs[_k][0]], [_col_axs[_k][1]], [_col_axs[_k][2]]]))
 
 
-    _col_axs[0][1].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large")
+    _col_axs[0][1].set_ylabel(
+        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+    )
     _col_axs[0][2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
 
     # --- mirror the full left-side y-axis (ticks, tick numbers, axis label) onto
     #     the right outer side of the last column ---
     _last = _n - 1
-    for _r, _rlabel in enumerate((
-        var_prof_ylabel[_var_name],
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
-    )):
+    for _r, _rlabel in enumerate(
+        (
+            var_prof_ylabel[_var_name],
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
+        )
+    ):
         _rax = _col_axs[_last][_r]
         _rax.tick_params(axis="y", which="both", right=True, labelright=True)
         _rax.yaxis.set_label_position("right")
@@ -1720,11 +2059,18 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _kappa1 = ("ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2")
     _n = len(_kappa1)
     fig_grid = plt.figure(figsize=(6 * _n, 10))
-    _axs = fig_grid.subplots(3, _n, height_ratios=[3, 1, 1], sharex="col", sharey=False, squeeze=False, gridspec_kw=dict(hspace=0, wspace=0.30))
+    _axs = fig_grid.subplots(
+        3,
+        _n,
+        height_ratios=[3, 1, 1],
+        sharex="col",
+        sharey=False,
+        squeeze=False,
+        gridspec_kw=dict(hspace=0, wspace=0.30),
+    )
     _col_axs = [_axs[:, _k] for _k in range(_n)]
     _x_var_name = "sd_dR"
     _jpt_true = CENTER_JPT
@@ -1746,14 +2092,15 @@ def _(
 
         if _prof_ylim_val is not None:
             _ax_main.set_ylim(*_prof_ylim_val)
-        _ax_incl.set_ylim(0.9, 1.1)
-        _ax_sd.set_ylim(0.9, 1.1)
+        _ax_incl.set_ylim(0.8, 1.1)
+        _ax_sd.set_ylim(0.8, 1.1)
 
         _ax_sd.set_xlabel(var_xlabel[_x_var_name], fontsize="x-large")
         _ax_sd.xaxis.set_major_formatter(FormatStrFormatter("%g"))
 
         if _prof_ylim_val is None:
             # --- headroom (inlined from add_top_headroom) ---
+            # _hr_lo, _hr_hi = _ax_main.get_ylim()
             _hr_lo, _hr_hi = _ax_main.get_ylim()
             if _ax_main.get_yscale() == "log":
                 _ax_main.set_ylim(_hr_lo, _hr_hi * 5.0)
@@ -1772,19 +2119,32 @@ def _(
         if _is_first:
             _ax_main.text(0.03, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
             _ax_main.text(
-                0.03, 0.90,
+                0.03,
+                0.90,
                 SYSTEM_INFO_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
 
         if _is_second:
             _ax_main.text(
-                0.1, 0.95,
+                0.1,
+                0.95,
                 KINEMATIC_CUTS_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
-            _ax_main.text(0.08, 0.8, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
-
+            _ax_main.text(
+                0.08,
+                0.8,
+                pt_label(_jpt_true),
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
+                fontsize="x-large",
+            )
 
         _leg_loc, _leg_bbox = {
             "sd_dR": ("upper left", None),
@@ -1794,20 +2154,25 @@ def _(
 
         if _is_last:
             _ax_main.legend(
-                POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS,
-                loc=_leg_loc, bbox_to_anchor=_leg_bbox, **LEGEND_KW,
+                POSTER_LEGEND_HANDLES,
+                PROF_LEGEND_LABELS,
+                loc=_leg_loc,
+                bbox_to_anchor=_leg_bbox,
+                **LEGEND_KW,
             )
 
         prune_ratio_panel_yticks(np.array([[_col_axs[_k][0]], [_col_axs[_k][1]], [_col_axs[_k][2]]]))
 
         _col_axs[_k][0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
 
-    _col_axs[0][1].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large")
+    _col_axs[0][1].set_ylabel(
+        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+    )
     _col_axs[0][2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
 
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    fig_grid.savefig(OUT_DIR / "fig_grid.pdf", bbox_inches="tight")
+    fig_grid.savefig(OUT_DIR / "fig_prof_grid.pdf", bbox_inches="tight")
 
     fig_grid
     return
@@ -1838,7 +2203,6 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     _var_name = "ch_ang_k2_b0"
     _x_var_name = "sd_symmetry"
     _jpt_trues = [1, 2, 3]
@@ -1846,14 +2210,23 @@ def _(
 
     fig_zg_123 = plt.figure(figsize=(6 * _n, 10))
     if _n == 1:
-        _axs_raw = fig_zg_123.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0))
+        _axs_raw = fig_zg_123.subplots(
+            3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=dict(hspace=0)
+        )
         _col_axs = [_axs_raw]
     else:
-        _axs_raw = fig_zg_123.subplots(3, _n, height_ratios=[3, 1, 1], sharey="row", sharex="col", squeeze=False, gridspec_kw=dict(hspace=0, wspace=0))
+        _axs_raw = fig_zg_123.subplots(
+            3,
+            _n,
+            height_ratios=[3, 1, 1],
+            sharey="row",
+            sharex="col",
+            squeeze=False,
+            gridspec_kw=dict(hspace=0, wspace=0),
+        )
         _col_axs = [_axs_raw[:, _k] for _k in range(_n)]
 
     for _k, _jpt_true in enumerate(_jpt_trues):
-
         _ax_main, _ax_incl, _ax_sd = _col_axs[_k][0], _col_axs[_k][1], _col_axs[_k][2]
         _ijpt = _jpt_true - 1
 
@@ -1894,22 +2267,36 @@ def _(
         if _is_first:
             _ax_main.text(0.03, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
             _ax_main.text(
-                0.4, 0.90,
+                0.4,
+                0.90,
                 SYSTEM_INFO_TEXT,
-                transform=_ax_main.transAxes, ha="left", va="top",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
             _col_axs[_k][0].set_ylabel(var_prof_ylabel[_var_name], fontsize="x-large")
 
         if _is_second:
             _ax_main.text(
-                0.4, 0.9,
-                KINEMATIC_CUTS_TEXT, fontsize="large",
-                transform=_ax_main.transAxes, ha="left", va="top",
+                0.4,
+                0.9,
+                KINEMATIC_CUTS_TEXT,
+                fontsize="large",
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
 
         # pt label in every column (each its own jet-pt bin)
-        _ax_main.text(0.03, 0.1, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
-
+        _ax_main.text(
+            0.03,
+            0.1,
+            pt_label(_jpt_true),
+            transform=_ax_main.transAxes,
+            ha="left",
+            va="top",
+            fontsize="x-large",
+        )
 
         _leg_loc, _leg_bbox = {
             "sd_dR": ("lower right", None),
@@ -1919,24 +2306,33 @@ def _(
 
         if _is_last:
             _ax_main.legend(
-                POSTER_LEGEND_HANDLES, PROF_LEGEND_LABELS, ncols=2, reverse=True,
-                loc=_leg_loc, bbox_to_anchor=_leg_bbox, **{**LEGEND_KW, "fontsize": "small"},
+                POSTER_LEGEND_HANDLES,
+                PROF_LEGEND_LABELS,
+                ncols=2,
+                reverse=True,
+                loc=_leg_loc,
+                bbox_to_anchor=_leg_bbox,
+                **{**LEGEND_KW, "fontsize": "small"},
             )
 
         prune_ratio_panel_yticks(np.array([[_col_axs[_k][0]], [_col_axs[_k][1]], [_col_axs[_k][2]]]))
 
 
-    _col_axs[0][1].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large")
+    _col_axs[0][1].set_ylabel(
+        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+    )
     _col_axs[0][2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
 
     # --- mirror the full left-side y-axis (ticks, tick numbers, axis label) onto
     #     the right outer side of the last column ---
     _last = _n - 1
-    for _r, _rlabel in enumerate((
-        var_prof_ylabel[_var_name],
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
-        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
-    )):
+    for _r, _rlabel in enumerate(
+        (
+            var_prof_ylabel[_var_name],
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$",
+            r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$",
+        )
+    ):
         _rax = _col_axs[_last][_r]
         _rax.tick_params(axis="y", which="both", right=True, labelright=True)
         _rax.yaxis.set_label_position("right")
@@ -1956,6 +2352,7 @@ def _(
     DIST_LEGEND_LABELS,
     FormatStrFormatter,
     KINEMATIC_CUTS_TEXT,
+    LEGEND_KW,
     OUT_DIR,
     POSTER_LEGEND_HANDLES,
     PRELIM_KW,
@@ -1970,37 +2367,33 @@ def _(
     var_xlabel,
     var_xlim,
 ):
-
     # --- 2x2 grid of all four distribution histograms (each tile = main + 2 ratio
     #     panels via draw_dist_panels). Columns butt flush (wspace=0): the right
     #     column's y axis labels/ticks are moved to the right outer side. Rows are
     #     packed with minimal hspace (just enough for the per-tile x-axis label).
     #     Annotations distributed: tile0 -> STAR + system info, tile1 -> kinematic
     #     cuts + pt, tile2 -> legend. All four share CENTER_JPT. ---
-    _dist_vars = ["ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2", "ch_ang_k2_b0"]
+    _kappa1 = ("ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2")
+    _n = len(_kappa1)
+    _fig_grid = plt.figure(figsize=(6 * _n, 10))
+    _axs = _fig_grid.subplots(
+        3,
+        _n,
+        height_ratios=[3, 1, 1],
+        sharex="col",
+        sharey=False,
+        squeeze=False,
+        gridspec_kw=dict(hspace=0, wspace=0.4),
+    )
+    _col_axs = [_axs[:, _k] for _k in range(_n)]
+    _x_var_name = "sd_dR"
     _jpt_true = CENTER_JPT
+    _ijpt = _jpt_true - 1
 
-    fig_dist_grid = plt.figure(figsize=(13, 16))
-    _subfigs = fig_dist_grid.subfigures(2, 2, wspace=0.0, hspace=0.0)
+    for _k, _var_name in enumerate(_kappa1):
+        _ax_main, _ax_incl, _ax_sd = _col_axs[_k][0], _col_axs[_k][1], _col_axs[_k][2]
 
-    for _idx, _var_name in enumerate(_dist_vars):
-        _col = _idx % 2
-        _is_right = _col == 1
-        _sf = _subfigs.flat[_idx]
-
-        # per-tile subplot margins: butt the two columns together at the shared
-        # center (left col extends to right=1.0, right col starts at left=0.0);
-        # outer side carries the labels. bottom leaves room for the x-axis label.
-        _gkw = dict(hspace=0.0, top=0.985, bottom=0.085)
-        if _is_right:
-            _gkw.update(left=0.01, right=0.86)
-        else:
-            _gkw.update(left=0.14, right=0.99)
-
-        _axs = _sf.subplots(3, 1, height_ratios=[3, 1, 1], sharex=True, gridspec_kw=_gkw)
-        _ax_main, _ax_incl, _ax_sd = _axs[0], _axs[1], _axs[2]
-
-        _ax_arts = draw_dist_panels(_ax_main, _ax_incl, _ax_sd, _var_name, _jpt_true)
+        _ax_art_map = draw_dist_panels(_ax_main, _ax_incl, _ax_sd, _var_name, _jpt_true)
 
         _ax_sd.set_xlabel(var_xlabel[_var_name], fontsize="x-large")
         _ax_sd.xaxis.set_major_formatter(FormatStrFormatter("%g"))
@@ -2014,36 +2407,65 @@ def _(
         if _ax_main.get_yscale() == "log":
             _ax_main.set_ylim(_hr_lo, _hr_hi * 5.0)
         else:
-            _ax_main.set_ylim(_hr_lo, _hr_hi + 0.3 * (_hr_hi - _hr_lo))
+            _ax_main.set_ylim(_hr_lo, _hr_hi + 0.25 * (_hr_hi - _hr_lo))
+        #     kinematic cuts (incl. jet-pt range, same for all columns) -> second column,
+        #     legend -> last column ---
+        _is_first = _k == 0
+        _is_second = _k == 1
+        _is_last = _k == _n - 1
 
-        # --- annotations distributed across tiles ---
-        if _idx == 0:
-            _ax_main.text(0.55, 0.97, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
-            _ax_main.text(0.03, 0.98, SYSTEM_INFO_TEXT, transform=_ax_main.transAxes, ha="left", va="top")
-        if _idx == 1:
-            _ax_main.text(0.7, 0.95, KINEMATIC_CUTS_TEXT, transform=_ax_main.transAxes, ha="left", va="top", fontsize="large")
-            _ax_main.text(0.42, 0.7, pt_label(_jpt_true), transform=_ax_main.transAxes, ha="left", va="top", fontsize="x-large")
-        if _idx == 3:
-            _ax_main.legend(
-                POSTER_LEGEND_HANDLES, DIST_LEGEND_LABELS,
-                loc="best", bbox_to_anchor=(0.5, 0.55, 0.45, 0.4), frameon=False, reverse=True, ncols=2, #fontsize="large"
+        if _is_first:
+            _ax_main.text(0.4, 0.98, PRELIM_TEXT, transform=_ax_main.transAxes, **PRELIM_KW)
+            _ax_main.text(
+                0.03,
+                0.95,
+                SYSTEM_INFO_TEXT,
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
             )
 
-        _ax_main.set_ylabel(var_hist_ylabel[_var_name], fontsize="x-large")
-        finalize_ratio_panels(_axs)
+        if _is_second:
+            _ax_main.text(
+                0.05,
+                0.98,
+                KINEMATIC_CUTS_TEXT,
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
+            )
+            _ax_main.text(
+                0.15,
+                0.83,
+                pt_label(_jpt_true),
+                transform=_ax_main.transAxes,
+                ha="left",
+                va="top",
+                fontsize="x-large",
+            )
 
-        # right column: move y axis labels + tick labels to the right outer side so
-        # the columns can sit flush with no inner-edge labels.
-        if _is_right:
-            for _a in _axs:
-                _a.yaxis.set_label_position("right")
-                _a.tick_params(axis="y", left=True, right=True, labelleft=False, labelright=True)
+        if _is_last:
+            _ax_main.legend(
+                POSTER_LEGEND_HANDLES,
+                DIST_LEGEND_LABELS,
+                **LEGEND_KW,
+                loc="best",
+                bbox_to_anchor=(0.5, 0.5, 0.5, 0.5),
+                # loc="lower right", bbox_to_anchor=(0.99, 0.99),
+            )
+        _ax_main.set_ylabel(var_hist_ylabel[_var_name], fontsize="xx-large")
+        finalize_ratio_panels(_col_axs[_k])
+    # _col_axs[0].set_ylabel(var_hist_ylabel[_var_name], fontsize="xx-large")
+    _col_axs[0][1].set_ylabel(
+        r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(incl.)}$", fontsize="x-large"
+    )
+    _col_axs[0][2].set_ylabel(r"$\frac{\mathrm{MC}}{\mathrm{Data}}\,\mathrm{(SD)}$", fontsize="x-large")
 
 
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    fig_dist_grid.savefig(OUT_DIR / "fig_dist_grid.pdf", bbox_inches="tight")
+    _fig_grid.savefig(OUT_DIR / "fig_grid.pdf", bbox_inches="tight")
 
-    fig_dist_grid
+    _fig_grid
     return
 
 
@@ -2167,11 +2589,11 @@ def _(SysVar, angularities, get_jet_pt_bins, json, load_config, np, torch):
         # is the full identity arange, as for LIKE_DATA).
         _full = np.arange(n_gen, dtype=np.int64)
         unf_tbl = (
-            gen_table if np.array_equal(gen_unf_order, _full)
-            else take_table(gen_table, gen_unf_order)
+            gen_table if np.array_equal(gen_unf_order, _full) else take_table(gen_table, gen_unf_order)
         )
         truth_tbl = (
-            gen_table if np.array_equal(gen_truth_order, _full)
+            gen_table
+            if np.array_equal(gen_truth_order, _full)
             else take_table(gen_table, gen_truth_order)
         )
         if truth_gen_weights is None:
@@ -2212,17 +2634,22 @@ def _(SysVar, angularities, get_jet_pt_bins, json, load_config, np, torch):
             prof_unf[(_yobs, _x)] = [_h.snapshot() for _h in _pu]
             prof_truth[(_yobs, _x)] = [_h.snapshot() for _h in _pt]
             prof_ratio[(_yobs, _x)] = [
-                ratio_snapshot(_u, _t)
-                for _u, _t in zip(prof_unf[(_yobs, _x)], prof_truth[(_yobs, _x)])
+                ratio_snapshot(_u, _t) for _u, _t in zip(prof_unf[(_yobs, _x)], prof_truth[(_yobs, _x)])
             ]
 
         return dict(
-            sys_var=str(sys_var), iteration=_it, jpt_bins=clo_jpt_bins, n_pt=n_pt,
-            hist_unf=hist_unf, hist_truth=hist_truth, hist_ratio=hist_ratio,
-            prof_unf=prof_unf, prof_truth=prof_truth, prof_ratio=prof_ratio,
+            sys_var=str(sys_var),
+            iteration=_it,
+            jpt_bins=clo_jpt_bins,
+            n_pt=n_pt,
+            hist_unf=hist_unf,
+            hist_truth=hist_truth,
+            hist_ratio=hist_ratio,
+            prof_unf=prof_unf,
+            prof_truth=prof_truth,
+            prof_ratio=prof_ratio,
             _bufs=_bufs,
         )
-
 
     return (
         CLOSURE_ITER,
@@ -2318,16 +2745,24 @@ def _(
     # ===================================================================== #
     def _closure_proxy(color, marker, filled):
         return Line2D(
-            [], [], color=color, marker=marker, linestyle="none", markersize=8,
-            markerfacecolor=(color if filled else "none"), markeredgecolor=color,
+            [],
+            [],
+            color=color,
+            marker=marker,
+            linestyle="none",
+            markersize=8,
+            markerfacecolor=(color if filled else "none"),
+            markeredgecolor=color,
         )
 
 
     # Retained (unused by the ratio-only figures) in case the comparison panel /
     # legend is reinstated later.
     CLOSURE_PROF_HANDLES = [
-        _closure_proxy("blue", "^", True), _closure_proxy("blue", "^", False),
-        _closure_proxy("red", "o", True), _closure_proxy("red", "o", False),
+        _closure_proxy("blue", "^", True),
+        _closure_proxy("blue", "^", False),
+        _closure_proxy("red", "o", True),
+        _closure_proxy("red", "o", False),
     ]
     CLOSURE_PROF_LABELS = ["unf. (incl.)", "truth (incl.)", "unf. (SD)", "truth (SD)"]
     CLOSURE_DIST_LABELS = ["unf. (incl.)", "truth (incl.)", "unf. (groomed)", "truth (groomed)"]
@@ -2342,8 +2777,13 @@ def _(
         _n = len(_jpts)
         fig = plt.figure(figsize=(6 * _n, 5.5))
         _axs_raw = fig.subplots(
-            2, _n, height_ratios=[1, 1], sharey="row", sharex="col",
-            squeeze=False, gridspec_kw=dict(hspace=0, wspace=0),
+            2,
+            _n,
+            height_ratios=[1, 1],
+            sharey="row",
+            sharex="col",
+            squeeze=False,
+            gridspec_kw=dict(hspace=0, wspace=0),
         )
         _col_axs = [_axs_raw[:, _k] for _k in range(_n)]
         for _k, _j in enumerate(_jpts):
@@ -2365,10 +2805,18 @@ def _(
             # context blocks bottom-left (clear region below the data), pt top-right.
             if _k == 0:
                 _ai.text(0.03, 0.94, tag, transform=_ai.transAxes, **PRELIM_KW)
-                #_ai.text(0.03, 0.06, SYSTEM_INFO_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
-            #if _k == 1:
-                #_ai.text(0.03, 0.06, KINEMATIC_CUTS_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
-            _ai.text(0.97, 0.83, pt_label(_j), transform=_ai.transAxes, ha="right", va="top", fontsize="large")
+                # _ai.text(0.03, 0.06, SYSTEM_INFO_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
+            # if _k == 1:
+            # _ai.text(0.03, 0.06, KINEMATIC_CUTS_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
+            _ai.text(
+                0.97,
+                0.83,
+                pt_label(_j),
+                transform=_ai.transAxes,
+                ha="right",
+                va="top",
+                fontsize="large",
+            )
             prune_ratio_panel_yticks(np.array([[_ai], [_asd]]))
 
         _col_axs[0][0].set_ylabel(r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$", fontsize="x-large")
@@ -2377,10 +2825,12 @@ def _(
         # mirror the left y-axis (ticks + label) onto the right outer side of the
         # last column.
         _last = _n - 1
-        for _r, _rlabel in enumerate((
-            r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$",
-            r"$\frac{unf.}{truth}\,\mathrm{(SD)}$",
-        )):
+        for _r, _rlabel in enumerate(
+            (
+                r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$",
+                r"$\frac{unf.}{truth}\,\mathrm{(SD)}$",
+            )
+        ):
             _rax = _col_axs[_last][_r]
             _rax.tick_params(axis="y", which="both", right=True, labelright=True)
             _rax.yaxis.set_label_position("right")
@@ -2395,15 +2845,15 @@ def _(
         """2x2 distribution closure grid (4 angularities at CENTER_JPT), mirroring
         the `fig_dist_grid` layout but RATIO-ONLY (incl. + groomed unf/truth ratio
         panels; the top distribution comparison panel is removed)."""
-        _dist_vars = ["ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2", "ch_ang_k2_b0"]
+        _dist_vars = ["ch_ang_k1_b0.5", "ch_ang_k1_b1", "ch_ang_k1_b2"]  # , "ch_ang_k2_b0"]
         _j = CENTER_JPT
-        fig = plt.figure(figsize=(13, 11))
-        _subfigs = fig.subfigures(2, 2, wspace=0.0, hspace=0.0)
+        fig = plt.figure(figsize=(18, 5.5))
+        _subfigs = fig.subfigures(1, 3, wspace=0.0, hspace=0.0)
         for _idx, _var in enumerate(_dist_vars):
             _is_right = (_idx % 2) == 1
             _sf = _subfigs.flat[_idx]
             _gkw = dict(hspace=0.0, top=0.97, bottom=0.13)
-            _gkw.update(dict(left=0.01, right=0.86) if _is_right else dict(left=0.14, right=0.99))
+            _gkw.update(dict(left=0.14, right=0.99))
             _axs = _sf.subplots(2, 1, height_ratios=[1, 1], sharex=True, gridspec_kw=_gkw)
             _ai, _asd = _axs[0], _axs[1]
             for _yobs, _color, _rax in (
@@ -2421,17 +2871,25 @@ def _(
             # annotations on the top (incl.) ratio panel.
             if _idx == 0:
                 _ai.text(0.03, 0.94, tag, transform=_ai.transAxes, **PRELIM_KW)
-                #_ai.text(0.03, 0.06, SYSTEM_INFO_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
+                # _ai.text(0.03, 0.06, SYSTEM_INFO_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
             if _idx == 1:
-                #_ai.text(0.03, 0.06, KINEMATIC_CUTS_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
-                _ai.text(0.97, 0.88, pt_label(_j), transform=_ai.transAxes, ha="right", va="top", fontsize="large")
+                # _ai.text(0.03, 0.06, KINEMATIC_CUTS_TEXT, transform=_ai.transAxes, ha="left", va="bottom", fontsize="small")
+                _ai.text(
+                    0.97,
+                    0.88,
+                    pt_label(_j),
+                    transform=_ai.transAxes,
+                    ha="right",
+                    va="top",
+                    fontsize="large",
+                )
             _ai.set_ylabel(r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$", fontsize="x-large")
             _asd.set_ylabel(r"$\frac{unf.}{truth}\,\mathrm{(SD)}$", fontsize="x-large")
             prune_ratio_panel_yticks(np.array([[_ai], [_asd]]))
-            if _is_right:
-                for _a in _axs:
-                    _a.yaxis.set_label_position("right")
-                    _a.tick_params(axis="y", left=True, right=True, labelleft=False, labelright=True)
+            # if _is_right:
+            #    for _a in _axs:
+            #       _a.yaxis.set_label_position("right")
+            #       _a.tick_params(axis="y", left=True, right=True, labelleft=False, labelright=True)
 
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         fig.savefig(OUT_DIR / fname, bbox_inches="tight")
@@ -2452,8 +2910,13 @@ def _(
         _n = len(_vars)
         fig = plt.figure(figsize=(6 * _n, 5.5))
         _axs_raw = fig.subplots(
-            2, _n, height_ratios=[1, 1], sharey="row", sharex="col",
-            squeeze=False, gridspec_kw=dict(hspace=0, wspace=0),
+            2,
+            _n,
+            height_ratios=[1, 1],
+            sharey="row",
+            sharex="col",
+            squeeze=False,
+            gridspec_kw=dict(hspace=0, wspace=0),
         )
         _col_axs = [_axs_raw[:, _k] for _k in range(_n)]
         for _k, _var in enumerate(_vars):
@@ -2465,7 +2928,7 @@ def _(
                 _rd = snapshot_state_dict(C["prof_ratio"][(_yobs, _x)][_j], batched=True)
                 plot_data_points(_rax, "errorbar", _rd, color=_color, marker="*", linestyle="none")
                 _rax.axhline(1.0, color="grey", linestyle="--", linewidth=1, alpha=0.5)
-                _rax.set_ylim(0.5, 1.5)
+                _rax.set_ylim(0.94, 1.09)
             if _x in var_xlim:
                 _ai.set_xlim(*var_xlim[_x])
             _asd.set_xlabel(var_xlabel[_x], fontsize="x-large")
@@ -2473,10 +2936,26 @@ def _(
             # headline (closure type) on col 0; per-column angularity label top-right.
             if _k == 0:
                 _ai.text(0.03, 0.94, tag, transform=_ai.transAxes, **PRELIM_KW)
-            _ai.text(0.97, 0.90, var_prof_ylabel[_var], transform=_ai.transAxes, ha="right", va="top", fontsize="large")
+            _ai.text(
+                0.97,
+                0.90,
+                var_prof_ylabel[_var],
+                transform=_ai.transAxes,
+                ha="right",
+                va="top",
+                fontsize="large",
+            )
             # jet-pt is identical across columns -> state once (centre column, bottom-left).
             if _k == 1:
-                _ai.text(0.03, 0.07, pt_label(_j), transform=_ai.transAxes, ha="left", va="bottom", fontsize="x-large")
+                _ai.text(
+                    0.03,
+                    0.07,
+                    pt_label(_j),
+                    transform=_ai.transAxes,
+                    ha="left",
+                    va="bottom",
+                    fontsize="x-large",
+                )
             prune_ratio_panel_yticks(np.array([[_ai], [_asd]]))
 
         # Columns are flush (wspace=0, shared y): blank the shared-edge x-tick labels
@@ -2499,10 +2978,12 @@ def _(
         _col_axs[0][1].set_ylabel(r"$\frac{unf.}{truth}\,\mathrm{(SD)}$", fontsize="x-large")
 
         _last = _n - 1
-        for _r, _rlabel in enumerate((
-            r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$",
-            r"$\frac{unf.}{truth}\,\mathrm{(SD)}$",
-        )):
+        for _r, _rlabel in enumerate(
+            (
+                r"$\frac{unf.}{truth}\,\mathrm{(incl.)}$",
+                r"$\frac{unf.}{truth}\,\mathrm{(SD)}$",
+            )
+        ):
             _rax = _col_axs[_last][_r]
             _rax.tick_params(axis="y", which="both", right=True, labelright=True)
             _rax.yaxis.set_label_position("right")
@@ -2511,7 +2992,6 @@ def _(
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         fig.savefig(OUT_DIR / fname, bbox_inches="tight")
         return fig
-
 
     return make_closure_dist_grid, make_closure_dr, make_closure_zg
 

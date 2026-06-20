@@ -119,12 +119,18 @@ def get_jet_pt_bins(sys_var):
             return (10.0, 15.0, 20.0, 30.0, 60.0)
 
 
-def get_unfolding_iter(sys_var, nom_iter=5):
+def get_unfolding_iter(sys_var, nom_iter=5, *, iter_sys_offsets=(-1, 2)):
+    # iter_sys_offsets = (low, high) deltas from nom_iter for the two unfolding-
+    # iteration systematic points. Default (-1, +2) reproduces the with-p_T^D
+    # choice ({4, 7} around nom 5). angularities_noptd passes (-1, +1) so the band
+    # is iter {1, 3} around its central iter 2 (set in histograms.py).
     match sys_var:
         case SysVar.UNFOLDING_ITERATION_0:
-            return nom_iter - 1
+            # return nom_iter - 1  # old: fixed -1
+            return nom_iter + iter_sys_offsets[0]
         case SysVar.UNFOLDING_ITERATION_1:
-            return nom_iter + 2
+            # return nom_iter + 2  # old: fixed +2
+            return nom_iter + iter_sys_offsets[1]
         case SysVar.UNFOLDING_PRIOR_LIKE_DATA:
             # Non-closure (LIKE_DATA) closure test keeps its early-iteration choice.
             return 1

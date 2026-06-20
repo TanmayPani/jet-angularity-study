@@ -26,6 +26,7 @@ from preprocessing import (
     N_DR,
     N_PT,
     jet_columns,
+    jet_columns_noptd,
 )
 
 # Angularity-observable column name fragments (vs pure kinematic/softdrop scalars). Used to
@@ -88,6 +89,21 @@ FEATURE_SPECS: dict[str, FeatureSpec] = {
         default_transform="z_norm",
         architecture="mlp",
         bin_block="none",
+    ),
+    "angularities_noptd": FeatureSpec(
+        name="angularities_noptd",
+        columns=tuple(jet_columns_noptd),
+        per_jet_shape=(len(jet_columns_noptd),),
+        input_dtype="float32",
+        default_transform="z_norm",
+        architecture="mlp",
+        bin_block="none",
+        notes=(
+            "Same as `angularities` but with both p_T^D (k2_b0) columns "
+            "(ch_ang_k2_b0, sd_ch_ang_k2_b0) dropped from the model input, for the "
+            "p_T^D-exclusion cross-check. Observables are still read from the "
+            "`angularities` arrows downstream (histograms.obs_feature_mode)."
+        ),
     ),
     "bin_counts": FeatureSpec(
         name="bin_counts",

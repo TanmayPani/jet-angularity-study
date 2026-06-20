@@ -52,6 +52,12 @@ jet_columns = (
     "sd_ch_ang_k1_b2",
     "sd_ch_ang_k2_b0",
 )
+# Input-column list for the `angularities_noptd` mode: identical to `jet_columns`
+# but with both p_T^D (k2_b0) angularities dropped from the model input. The arrow
+# files still carry these columns; this only controls what `to_tensordict` feeds.
+jet_columns_noptd = tuple(
+    c for c in jet_columns if c not in ("ch_ang_k2_b0", "sd_ch_ang_k2_b0")
+)
 jet_r = 0.4
 
 con_pt_bins = np.asarray(
@@ -64,7 +70,17 @@ N_PT = con_pt_bins.shape[0] - 1
 N_DR = con_dr_bins.shape[0] - 1
 N_BINS = N_PT * N_DR
 
-FEATURE_MODES = ("angularities", "bin_counts", "combined", "kinematics")
+# --- old ---
+# FEATURE_MODES = ("angularities", "bin_counts", "combined", "kinematics")
+# `angularities_noptd` reuses the angularities code paths (scalar `to_tensordict`
+# branch, MLP classifier) but drops p_T^D from the input via `jet_columns_noptd`.
+FEATURE_MODES = (
+    "angularities",
+    "angularities_noptd",
+    "bin_counts",
+    "combined",
+    "kinematics",
+)
 
 
 @nb.jit
@@ -687,6 +703,13 @@ def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
     output_dir.mkdir(parents=True, exist_ok=True)
     print("Tensordicts will be written to", output_dir)
 
+    # The `angularities_noptd` mode feeds the same scalar columns as `angularities`
+    # minus the two p_T^D (k2_b0) angularities. Other modes are unaffected:
+    # bin_counts ignores `columns` (uses the bin block) and combined keeps jet_columns.
+    _input_columns = (
+        jet_columns_noptd if feature_mode == "angularities_noptd" else jet_columns
+    )
+
     buffers.append(pa.memory_map(str(embedding_input_path / "reco-matches.arrow")))
     reco_match_table = pa.ipc.open_file(buffers[-1]).read_all()
     buffers.append(pa.memory_map(str(embedding_input_path / "fakes.arrow")))
@@ -696,7 +719,7 @@ def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
     detlvl_td = to_tensordict(
         data_table,
         reco_table,
-        columns=jet_columns,
+        columns=_input_columns,
         prefix=output_dir / "det_lvl",
         max_chunksize=100000,
         feature_mode=feature_mode,
@@ -718,7 +741,7 @@ def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
     partlvl_td = to_tensordict(
         gen_table_data_like,
         gen_table,
-        columns=jet_columns,
+        columns=_input_columns,
         prefix=output_dir / "part_lvl",
         max_chunksize=100000,
         feature_mode=feature_mode,
@@ -834,9 +857,12 @@ def main(
 
 
 if __name__ == "__main__":
-    from config import load_config
+    from config import load_config, config_path_from_argv
 
-    cfg = load_config()
+    # Optional positional config path (see config.config_path_from_argv) lets a driver
+    # point this at a private config copy for concurrent runs; defaults to the shared
+    # runtime-files/config.json otherwise.
+    cfg = load_config(config_path_from_argv())
     root_dir = cfg.dataset_root
     sys_var = cfg.sys_var
 

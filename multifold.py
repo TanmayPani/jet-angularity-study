@@ -40,7 +40,7 @@ from dataset import (
     build_input_transform,
 )
 from model_io import save_model_weights, save_ensemble_state, load_ensemble_state
-from config import load_config, Config
+from config import load_config, config_path_from_argv, Config
 from systematics import SysVar
 
 # Chunk the vmap over replicas during inference (predict) to bound peak GPU
@@ -1272,7 +1272,14 @@ def run(cfg: Config) -> None:
         )
 
     print("Saving config file to folder", out_dir, "...")
-    shutil.copy("runtime-files/config.json", out_dir / "config.json")
+    # --- old: hardcoded source path -> snapshots the SHARED config, which is wrong when
+    # the run is driven off a per-SysVar copy (run_noptd_pipeline.py) or called
+    # programmatically (molab). ---
+    # shutil.copy("runtime-files/config.json", out_dir / "config.json")
+    # Snapshot the config actually loaded for this run (cfg is the parsed config.json,
+    # incl. this run's sys_var/feature_mode), so the output dir is self-describing.
+    with open(out_dir / "config.json", "w") as _cfg_snapshot:
+        json.dump(dict(cfg), _cfg_snapshot, indent=2)
 
     early_stopping_kwargs = dict(patience=cfg.early_stopping_patience)
 
@@ -1780,4 +1787,6 @@ def run(cfg: Config) -> None:
 
 
 if __name__ == "__main__":
-    run(load_config())
+    # Optional positional config path (config.config_path_from_argv) for concurrent runs
+    # driven off a private config copy; defaults to runtime-files/config.json.
+    run(load_config(config_path_from_argv()))

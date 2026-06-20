@@ -162,3 +162,22 @@ class Config(dict):
 def load_config(path: str | Path = CONFIG_PATH) -> Config:
     with open(path) as f:
         return Config(json.load(f))
+
+
+def config_path_from_argv(default: str | Path = CONFIG_PATH) -> Path:
+    """Resolve a config path from the command line so an entry point can be pointed at a
+    private config copy without env vars, e.g.::
+
+        uv run multifold.py runtime-files/config.noptd.json
+
+    Returns the first ``sys.argv`` token that is an existing ``*.json`` file, else
+    ``default``. The ``.json``+exists gate means marimo's own invocation (``marimo edit
+    histograms.py`` — argv carries a subcommand / the notebook name, not a json file)
+    safely falls through to the default ``runtime-files/config.json``.
+    """
+    import sys
+
+    for arg in sys.argv[1:]:
+        if arg.endswith(".json") and Path(arg).is_file():
+            return Path(arg)
+    return default

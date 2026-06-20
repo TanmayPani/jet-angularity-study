@@ -23,7 +23,7 @@
   "barlow_threshold": 1.0,
   "dataset_root": "./datasets/STAR_pp200GeV_production_2012",
   "device": "auto",
-  "sys_var": "nominal",
+  "sys_var": "unf_iter_sys_1",
   "training": {
     "hidden_layers": [
       256,
@@ -43,7 +43,7 @@
     "predict_replica_chunk": 2,
     "optimizer": {
       "lr": 0.001,
-      "eps": 1e-8,
+      "eps": 1e-08,
       "weight_decay": 0.01,
       "decoupled_weight_decay": true
     }
