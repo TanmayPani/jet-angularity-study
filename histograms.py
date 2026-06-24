@@ -453,7 +453,12 @@ def _(unf_weights):
     # _source_dir = dataset_root + "/features/" + feature_mode + "/embedding"
     _source_dir = dataset_root + "/features/" + obs_feature_mode + "/embedding"
 
-    if sys_var in {SysVar.NONE, SysVar.TOWER_ET_CORRECTION, SysVar.TRACK_EFFICIENCY}:
+    if sys_var in {
+        SysVar.NONE,
+        SysVar.TOWER_ET_CORRECTION,
+        SysVar.TOWER_GAIN,
+        SysVar.TRACK_EFFICIENCY,
+    }:
         _input_root_dir = os.path.join(_source_dir, str(sys_var))
     else:
         _input_root_dir = os.path.join(_source_dir, str(SysVar.NONE))
@@ -527,6 +532,7 @@ def _():
     _has_own_unfolding = (
         {
             SysVar.TOWER_ET_CORRECTION,
+            SysVar.TOWER_GAIN,
             SysVar.TRACK_EFFICIENCY,
         }
         | _closure_sysvars
@@ -545,11 +551,14 @@ def _():
     # Iteration choice is owned by systematics.get_unfolding_iter (keyed by
     # sys_var); the gen-side weights are the even-indexed arrays arr_{2*iter}.
     # nom iteration is feature-mode-specific: with-p_T^D central = iter5 (poster);
-    # angularities_noptd central = iter2 (the no-ptd ensemble runs away by iter5,
-    # see project_noptd_iteration_denoising). The iter-systematic offsets bracket
-    # the central: with-ptd (-1, +2) -> {4, 7}; noptd (-1, +1) -> {1, 3}.
+    # the few-feature MLP subset modes (angularities_noptd, angularities_minimal)
+    # central = iter2 (those ensembles run away by iter5, see
+    # project_noptd_iteration_denoising). The iter-systematic offsets bracket the
+    # central: with-ptd (-1, +2) -> {4, 7}; subset (-1, +1) -> {1, 3}.
     # _iteration = get_unfolding_iter(sys_var, 5)  # old: hardcoded nom_iter=5
-    if feature_mode == "angularities_noptd":
+    # --- old: noptd-only branch ---
+    # if feature_mode == "angularities_noptd":
+    if feature_mode in {"angularities_noptd", "angularities_minimal"}:
         _nom_iter, _iter_off = 2, (-1, 1)
     else:
         _nom_iter, _iter_off = 5, (-1, 2)

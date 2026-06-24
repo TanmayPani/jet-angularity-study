@@ -23,7 +23,7 @@
   "barlow_threshold": 1.0,
   "dataset_root": "./datasets/STAR_pp200GeV_production_2012",
   "device": "auto",
-  "sys_var": "nominal",
+  "sys_var": "tower_gain_sys",
   "training": {
     "hidden_layers": [
       256,

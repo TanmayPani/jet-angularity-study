@@ -403,7 +403,9 @@ def plot_profile_single(
         errbar_kwargs = dict(fill=True, alpha=0.5)
     else:
         points_label: str = rf"$\langle\lambda^{label}\rangle$"
-        points_kwargs = dict(linewidth=2)
+        # Respect a caller-supplied linewidth (see plot_hist_single note); pop
+        # it so it isn't forwarded twice into plot_data_points.
+        points_kwargs = dict(linewidth=kwargs.pop("linewidth", 2))
         sys_err_dict = None
         errbar_kwargs = None
 
@@ -780,7 +782,11 @@ def plot_hist_single(
     line_style_mode = "linestyle" in kwargs or "ls" in kwargs
 
     if line_style_mode:
-        points_kwargs = dict(linewidth=2)
+        # Respect a caller-supplied linewidth (e.g. per-MC width bumps to
+        # compensate for dotted/dashed reading thinner than solid); pop it out
+        # of kwargs so it isn't also forwarded into plot_data_points (which
+        # would raise "multiple values for keyword argument 'linewidth'").
+        points_kwargs = dict(linewidth=kwargs.pop("linewidth", 2))
     else:
         marker = kwargs.pop("marker", "o")
         markersize = kwargs.pop("markersize", 5)

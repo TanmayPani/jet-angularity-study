@@ -26,6 +26,7 @@ from preprocessing import (
     N_DR,
     N_PT,
     jet_columns,
+    jet_columns_minimal,
     jet_columns_noptd,
 )
 
@@ -103,6 +104,22 @@ FEATURE_SPECS: dict[str, FeatureSpec] = {
             "(ch_ang_k2_b0, sd_ch_ang_k2_b0) dropped from the model input, for the "
             "p_T^D-exclusion cross-check. Observables are still read from the "
             "`angularities` arrows downstream (histograms.obs_feature_mode)."
+        ),
+    ),
+    "angularities_minimal": FeatureSpec(
+        name="angularities_minimal",
+        columns=tuple(jet_columns_minimal),
+        per_jet_shape=(len(jet_columns_minimal),),
+        input_dtype="float32",
+        default_transform="z_norm",
+        architecture="mlp",
+        bin_block="none",
+        notes=(
+            "Same as `angularities` but with four observables dropped from the model "
+            "input: M (m), M_g (sd_m), R_g (sd_dR) and p_T^D (ch_ang_k2_b0, "
+            "sd_ch_ang_k2_b0). The 'how little information is enough' cross-check. "
+            "Observables are still read from the `angularities` arrows downstream "
+            "(histograms.obs_feature_mode)."
         ),
     ),
     "bin_counts": FeatureSpec(

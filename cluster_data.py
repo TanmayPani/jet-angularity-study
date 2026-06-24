@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from functools import cache
@@ -14,6 +15,7 @@ import fastjet as fj
 from systematics import (
     SysVar,
     apply_hadronic_correction_sys_var,
+    apply_tower_gain_sys_var,
     # apply_flat_track_pt_factors,
     get_tracking_efficiency_sys_var_mask,
 )
@@ -25,8 +27,34 @@ vector.register_awkward()
 
 bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
 
-root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
-data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+# --- Input ROOT-tree source (configurable) ---------------------------------
+# Two interchangeable sources for the raw (real-data) ROOT trees:
+#   * "local"  : a mounted physical drive (current; fast; default)
+#   * "gdrive" : Google Drive via gdrive_helper.GDrivePath (migration target)
+# Select with the env var DATA_SOURCE=local|gdrive (default: local). GDrivePath
+# authenticates + walks Drive on construction, so it is built lazily ONLY when
+# gdrive is selected -- importing this module must never hit the network.
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "local").lower()
+
+LOCAL_DATA_ROOT = "/run/media/tanmaypani/Samsung-1tb/data/pp200_production_2012/2024-03-12/Events"
+GDRIVE_DATA_PARTS = ("STAR_RESEARCH", "data", "pp200_production_2012", "2024-03-12", "Events")
+
+
+def resolve_data_folder_path():
+    """Return the configured real-data tree source: a local path str, or a
+    GDrivePath (built lazily; only touches the network when DATA_SOURCE=gdrive)."""
+    if DATA_SOURCE == "gdrive":
+        path = GDrivePath("root")
+        for _part in GDRIVE_DATA_PARTS:
+            path = path / _part
+        return path
+    return LOCAL_DATA_ROOT
+
+
+# --- old (eager GDrivePath at import; crashed once the Drive layout changed) ---
+# root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
+# data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+data_folder_path = resolve_data_folder_path()
 
 output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/jets"
 
@@ -154,6 +182,8 @@ def process_events(
                 tracks = tracks[get_tracking_efficiency_sys_var_mask(events, seed)]
             case SysVar.TOWER_ET_CORRECTION:
                 events = apply_hadronic_correction_sys_var(events)
+            case SysVar.TOWER_GAIN:
+                events = apply_tower_gain_sys_var(events)
             case _:
                 pass
 

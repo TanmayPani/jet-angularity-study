@@ -70,7 +70,8 @@ def _():
     from config import load_config
 
     _cfg_setup = load_config()
-    feature_mode = _cfg_setup["feature_mode"]
+    # feature_mode = _cfg_setup["feature_mode"]
+    feature_mode = "angularities_noptd"
 
     common_vars = (
         "m",
@@ -120,7 +121,7 @@ def _():
         "pt": (10.0, 70.0),
         "m": (1.0, 10.0),
         "sd_m": (1.0, 10.0),
-        "sd_dR": (0.05, 0.4),
+        "sd_dR": (0.05, 0.37),
         "sd_symmetry": (0.18, 0.52),
         "ch_ang_k1_b0.5": (0.0, 0.72),
         "ch_ang_k1_b1": (0.0, 0.62),
@@ -162,16 +163,18 @@ def _():
 
     mc_labels = ("PYTHIA6", "PYTHIA8", "HERWIG7")
     mc_hist_styles = {
-        "PYTHIA6": {"linestyle": "dotted"},
+        # The solid line reads visually heavier than the dotted/long-dash patterns
+        # at the same nominal width (no gaps to break it up), so bump the broken
+        # patterns' linewidths to compensate: dotted (most gaps) most, long-dash
+        # moderately, solid stays at the baseline 2.
+        "PYTHIA6": {"linestyle": "dotted", "linewidth": 3.0},
         # pythia8 was "dashdot", which reads as near-solid at ratio-panel scale
         # and blended with herwig7's solid line. Use an open long-dash pattern so
         # the three MC curves (dotted / long-dash / solid) stay distinguishable.
-        "PYTHIA8": {"linestyle": (0, (3, 1.5))},
-        "HERWIG7": {"linestyle": "solid"},
+        "PYTHIA8": {"linestyle": (0, (3, 1.5)), "linewidth": 2.6},
+        "HERWIG7": {"linestyle": "solid", "linewidth": 2.0},
     }
-    mc_proxy_handles = {
-        mc: Line2D([], [], color="black", linewidth=2, **mc_hist_styles[mc]) for mc in mc_labels
-    }
+    mc_proxy_handles = {mc: Line2D([], [], color="black", **mc_hist_styles[mc]) for mc in mc_labels}
     plot_ratio_sys_err = False
     # Master switch for the data systematic-uncertainty overlays (main-panel
     # error boxes + gray ratio band). Set False to suppress them entirely — e.g.
@@ -2088,6 +2091,7 @@ def _(
         _ratio_ylim_val = resolve_ylim(_ratio_spec, _ijpt, default=(0.5, 1.5))
 
         if _x_var_name in var_xlim:
+            # _ax_main.set_xlim(*var_xlim[_x_var_name])
             _ax_main.set_xlim(*var_xlim[_x_var_name])
 
         if _prof_ylim_val is not None:

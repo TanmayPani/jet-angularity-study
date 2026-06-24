@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 class SysVar(StrEnum):
     NONE = "nominal"
     TOWER_ET_CORRECTION = "tower_et_corr_sys"
+    TOWER_GAIN = "tower_gain_sys"
     TRACK_EFFICIENCY = "track_pt_sys"
     JET_PT_RESOLUTION_0 = "jet_pt_res_sys_0"
     JET_PT_RESOLUTION_1 = "jet_pt_res_sys_1"
@@ -67,6 +68,21 @@ var_unit = {
 def apply_hadronic_correction_sys_var(events, hadr_corr_frac=0.5):
     tower_dE = events["towers._RawE"] - events["towers._E"]
     events["towers._E"] = events["towers._E"] - hadr_corr_frac * tower_dE
+    mass_array = ak.full_like(events["towers._E"], 0.13957)
+    tower_p2 = events["towers._E"] ** 2 - mass_array**2
+    tower_p2 = ak.fill_none(ak.mask(tower_p2, tower_p2 > 0), value=0)
+    tower_p = np.sqrt(tower_p2)
+    events["towers._Pt"] = tower_p / np.cosh(events["towers._Eta"])
+    return events
+
+
+def apply_tower_gain_sys_var(events, gain_frac=0.038):
+    # BEMC tower energy-scale (gain) uncertainty: scale only the calorimeter
+    # response (RawE) by (1 + gain_frac), keeping the hadronic-correction
+    # subtraction (RawE - E) fixed -> E_var = E + gain_frac * RawE. Recompute
+    # tower Pt from the varied energy (charged-pion mass + cosh(eta)). Distinct
+    # from apply_hadronic_correction_sys_var, which varies the correction itself.
+    events["towers._E"] = events["towers._E"] + gain_frac * events["towers._RawE"]
     mass_array = ak.full_like(events["towers._E"], 0.13957)
     tower_p2 = events["towers._E"] ** 2 - mass_array**2
     tower_p2 = ak.fill_none(ak.mask(tower_p2, tower_p2 > 0), value=0)
@@ -356,6 +372,7 @@ SOURCE_KEYS = (
     "jet_pt_res_sys",
     "track_pt_sys",
     "tower_et_corr_sys",
+    "tower_gain_sys",
     # --- old: two independent prior sources summed in quadrature ---
     # "unf_prior_like_data",
     # "unf_prior_herwig7",
@@ -380,6 +397,7 @@ TOTAL_KEYS = (
     "unfolding_sys",
     "track_pt_sys",
     "tower_et_corr_sys",
+    "tower_gain_sys",
 )
 
 # The non-closure source shares most events with the nominal (it is a closure
@@ -416,6 +434,7 @@ def calculate_uncertainties(
         "jet_pt_res_sys": ("jet_pt_res_sys_0", "jet_pt_res_sys_1"),
         "track_pt_sys": ("track_pt_sys",),
         "tower_et_corr_sys": ("tower_et_corr_sys",),
+        "tower_gain_sys": ("tower_gain_sys",),
     }
 
     for file_name in os.listdir(nominal_path):

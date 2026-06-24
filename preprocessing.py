@@ -58,6 +58,16 @@ jet_columns = (
 jet_columns_noptd = tuple(
     c for c in jet_columns if c not in ("ch_ang_k2_b0", "sd_ch_ang_k2_b0")
 )
+# Input-column list for the `angularities_minimal` mode: `angularities` minus the
+# four observables M (`m`), M_g (`sd_m`), R_g (`sd_dR`) and p_T^D (both the
+# ungroomed `ch_ang_k2_b0` and groomed `sd_ch_ang_k2_b0` variants). As with
+# `jet_columns_noptd`, the arrow files still carry these columns; this only
+# controls what `to_tensordict` feeds the model.
+jet_columns_minimal = tuple(
+    c
+    for c in jet_columns
+    if c not in ("m", "sd_m", "sd_dR", "ch_ang_k2_b0", "sd_ch_ang_k2_b0")
+)
 jet_r = 0.4
 
 con_pt_bins = np.asarray(
@@ -72,11 +82,14 @@ N_BINS = N_PT * N_DR
 
 # --- old ---
 # FEATURE_MODES = ("angularities", "bin_counts", "combined", "kinematics")
-# `angularities_noptd` reuses the angularities code paths (scalar `to_tensordict`
-# branch, MLP classifier) but drops p_T^D from the input via `jet_columns_noptd`.
+# FEATURE_MODES = ("angularities", "angularities_noptd", "bin_counts", "combined", "kinematics")
+# `angularities_noptd` / `angularities_minimal` reuse the angularities code paths
+# (scalar `to_tensordict` branch, MLP classifier) but drop observables from the model
+# input via `jet_columns_noptd` (p_T^D) / `jet_columns_minimal` (p_T^D, R_g, M_g, M).
 FEATURE_MODES = (
     "angularities",
     "angularities_noptd",
+    "angularities_minimal",
     "bin_counts",
     "combined",
     "kinematics",
@@ -703,12 +716,20 @@ def make_datasets_for_unfolding(input_dir, output_dir, sysvar, feature_mode):
     output_dir.mkdir(parents=True, exist_ok=True)
     print("Tensordicts will be written to", output_dir)
 
-    # The `angularities_noptd` mode feeds the same scalar columns as `angularities`
-    # minus the two p_T^D (k2_b0) angularities. Other modes are unaffected:
-    # bin_counts ignores `columns` (uses the bin block) and combined keeps jet_columns.
-    _input_columns = (
-        jet_columns_noptd if feature_mode == "angularities_noptd" else jet_columns
-    )
+    # The `angularities_*` subset modes feed the same scalar columns as `angularities`
+    # minus a few observables: `angularities_noptd` drops the two p_T^D (k2_b0)
+    # angularities; `angularities_minimal` additionally drops M / M_g / R_g. Other
+    # modes are unaffected: bin_counts ignores `columns` (uses the bin block) and
+    # combined keeps jet_columns. Extend this map to add another subset mode.
+    # --- old ---
+    # _input_columns = (
+    #     jet_columns_noptd if feature_mode == "angularities_noptd" else jet_columns
+    # )
+    _INPUT_COLUMNS = {
+        "angularities_noptd": jet_columns_noptd,
+        "angularities_minimal": jet_columns_minimal,
+    }
+    _input_columns = _INPUT_COLUMNS.get(feature_mode, jet_columns)
 
     buffers.append(pa.memory_map(str(embedding_input_path / "reco-matches.arrow")))
     reco_match_table = pa.ipc.open_file(buffers[-1]).read_all()

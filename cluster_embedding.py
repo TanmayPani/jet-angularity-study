@@ -31,11 +31,47 @@ from gdrive_helper import GDrivePath
 
 bad_run_list: str = "/home/tanmaypani/star-workspace/jet-angularity-study/runtime-files/runLists/pp200_production_2012_BAD_Issac.list"
 
-root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
-data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+# --- Input ROOT-tree source (configurable) ---------------------------------
+# Two interchangeable sources for the Pythia6-embedding ROOT trees:
+#   * "local"  : a mounted physical drive (current; fast; default)
+#   * "gdrive" : Google Drive via gdrive_helper.GDrivePath (migration target)
+# Select with the env var DATA_SOURCE=local|gdrive (default: local). GDrivePath
+# authenticates + walks Drive on construction, so it is built lazily ONLY when
+# gdrive is selected -- importing this module must never hit the network.
+DATA_SOURCE = os.environ.get("DATA_SOURCE", "local").lower()
+
+LOCAL_DATA_ROOT = "/run/media/tanmaypani/Samsung-1tb/data/Pythia6Embedding_pp200_production_2012_P12id_SL12d_20235003_MuToTree20250123"
+GDRIVE_DATA_PARTS = (
+    "STAR_RESEARCH",
+    "data",
+    "pp200_production_2012",
+    "2024-03-12",
+    "Events",
+)
 
 
-output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
+def resolve_data_folder_path():
+    """Return the configured embedding-tree source: a local path str, or a
+    GDrivePath (built lazily; only touches the network when DATA_SOURCE=gdrive)."""
+    if DATA_SOURCE == "gdrive":
+        path = GDrivePath("root")
+        for _part in GDRIVE_DATA_PARTS:
+            path = path / _part
+        return path
+    return LOCAL_DATA_ROOT
+
+
+# --- old (eager GDrivePath at import; crashed once the Drive layout changed) ---
+# root_prefix = GDrivePath("root") / "STAR_RESEARCH" / "data"
+# data_folder_path = root_prefix / "pp200_production_2012" / "2024-03-12" / "Events"
+data_folder_path = resolve_data_folder_path()
+
+
+# Post-refactor layout: stage-1 clustering writes under `jets/`, so embedding goes
+# to `jets/embedding/<sysvar>/ptHat<lo>to<hi>/` (read by preprocessing.preprocess_embedding).
+# --- old (pre-refactor; `clustered_jets/` no longer exists on disk) ---
+# output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/clustered_jets/embedding"
+output_path_prefix: str = "/home/tanmaypani/star-workspace/jet-angularity-study/datasets/STAR_pp200GeV_production_2012/jets/embedding"
 
 pt_hat_bins = ["11", "15", "20", "25", "35", "45", "55", "infty"]
 pt_hat_low_edges = [11, 15, 20, 25, 35, 45, 55]
@@ -498,7 +534,8 @@ if __name__ == "__main__":
 
     # sys_var_type = SysVar.NONE
     # sys_var_type = SysVar.TOWER_ET_CORRECTION
-    sys_var_type = SysVar.TRACK_EFFICIENCY
+    sys_var_type = SysVar.TOWER_GAIN
+    # sys_var_type = SysVar.TRACK_EFFICIENCY
 
     ptHatBinsToRun = [6] if do_test else list(range(0, 7))
     # ptHatBinsToRun = [6]

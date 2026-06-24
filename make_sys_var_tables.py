@@ -47,6 +47,7 @@ DEFAULT_OUT = Path("slides/update-pwg-systematics/sys_vars.tex")
 SOURCE_COLUMNS = (
     ("track_pt_sys",        r"track-$p_{\rm T}$"),
     ("tower_et_corr_sys",   r"tower-$E_{\rm T}$"),
+    ("tower_gain_sys",      r"tower-gain"),
     ("jet_pt_res_sys",      r"jet-$p_{\rm T}$ res."),
     ("unf_iter_sys",        r"$N_{\rm iter}$"),
     # --- old: single equal-status combined prior column ---

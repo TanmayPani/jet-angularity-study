@@ -724,23 +724,32 @@ def _(dist_lambda_label, dist_ylabel, draw_dist_level):
     return
 
 
-@app.cell
-def _():
+@app.cell(hide_code=True)
+def grooming_cartoon():
     # ---------------------------------------------------------------------------
-    # Edification: why the HIGHEST-R_g jets are the LEAST affected by grooming.
-    #
-    # Colleague's question -- "jets with the highest R_g would be the least
-    # affected by grooming? These would have to be pathological jets, with
-    # wide-angle but high-z radiation, yes?"  Answer: yes, exactly. Worked through
-    # by hand on two 5-constituent jets, numbers cross-checked against the EXACT
-    # softdrop path used in preprocessing.py (fastjet
-    # exclusive_jets_softdrop_grooming, z_cut=0.2, beta=0, R0=0.4, scalar-z).
+    # Edification (combined R_g grooming + one-prong/n-prong cartoons): four
+    # archetype jets, all at p_T^jet ~ 30 GeV, ordered by R_g LEFT -> RIGHT. Numbers
+    # cross-checked against the EXACT softdrop path used in preprocessing.py
+    # (exclusive_jets_softdrop_grooming, z_cut=0.2, beta=0, R0=0.4, scalar-z).
+    # Each jet is a hard core dressed (or not) by a soft, wide skirt that SoftDrop
+    # peels; what survives -- the groomed core -- is what sets the girth lambda:
+    #   (a) soft-wide halo + hard collinear core -> R_g tiny, strongly groomed
+    #   (b) narrow & hard, ONE-prong             -> R_g small
+    #   (c) diffuse & wide, n-PRONG              -> R_g mid
+    #   (d) two hard wide prongs                 -> R_g large, grooming removes nothing
+    # The pair (d) <-> (a) is the punchline: the HIGHEST-R_g jets (wide *and* hard
+    # radiation) are the LEAST affected by grooming, since beta=0 makes the SoftDrop
+    # cut a pure momentum balance and R_g is just the angle of the first split it keeps.
     # ---------------------------------------------------------------------------
     import marimo as mo
+    from adjustText import adjust_text
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 
     def _run_softdrop(consts, _R=0.4):
-        """Groom a toy jet through the real code path. consts = [(pt,eta,phi),...]."""
+        """Groom a toy jet through the real code path; also return the surviving
+        (groomed) constituents so the kept/dropped mask is DERIVED, not guessed.
+        consts = [(pt,eta,phi),...]."""
         import awkward as _ak, vector as _vec, fastjet as _fj
 
         _vec.register_awkward()
@@ -762,21 +771,17 @@ def _():
         )
         _cs = _fj.ClusterSequence(_arr, _fj.JetDefinition(_fj.antikt_algorithm, _R, _fj.E_scheme))
         _sd = _cs.exclusive_jets_softdrop_grooming(symmetry_cut=0.2, R0=_R)
+        _c = _sd.constituents
+        _px = np.asarray(_ak.flatten(_c.px, axis=1))
+        _py = np.asarray(_ak.flatten(_c.py, axis=1))
+        _pz = np.asarray(_ak.flatten(_c.pz, axis=1))
+        _gpt = np.hypot(_px, _py)
         return dict(
             Rg=float(_sd.deltaRsoftdrop[0]),
             zg=float(_sd.symmetrysoftdrop[0]),
-            n_out=int(_ak.count(_sd.constituents.E, axis=1)[0]),
+            n_out=int(_ak.count(_c.E, axis=1)[0]),
+            groomed=list(zip(_gpt, np.arcsinh(_pz / _gpt), np.arctan2(_py, _px))),
         )
-
-
-    def _lambda11(consts, _R=0.4):
-        """Girth lambda_1^1 about the jet axis (summed-4-momentum direction)."""
-        _pt = np.array([c[0] for c in consts])
-        _e = np.array([c[1] for c in consts])
-        _p = np.array([c[2] for c in consts])
-        _ae, _ap = _jet_axis(consts)
-        _dR = np.sqrt((_e - _ae) ** 2 + (_p - _ap) ** 2)
-        return float(((_pt / _pt.sum()) * (_dR / _R)).sum())
 
 
     def _jet_axis(consts):
@@ -792,184 +797,764 @@ def _():
 
 
     def _jet_pt(consts):
-        """Jet transverse momentum from the summed 4-momentum."""
         _pt = np.array([c[0] for c in consts])
         _p = np.array([c[2] for c in consts])
         return float(np.hypot((_pt * np.cos(_p)).sum(), (_pt * np.sin(_p)).sum()))
 
 
-    # Two minimal 5-constituent jets (pt [GeV], eta, phi).
-    #   A = two wide-separated HARD clusters (each with collinear substructure):
-    #       the widest C/A split balances the two clusters -> passes z>z_cut.
-    #   B = hard collinear core + a halo of 3 soft wide-angle constituents:
-    #       every wide split is soft -> all peeled, stop at the core.
-    _jetA = [
-        (7.0, 0.0, 0.00),
-        (5.0, 0.03, 0.00),
-        (3.0, 0.0, 0.03),  # cluster 1, pT~15
-        (6.0, 0.0, 0.35),
-        (4.0, 0.03, 0.35),
-    ]  # cluster 2, pT~10  ->  jet pT ~ 25 GeV
-    _jetB = [
-        (14.0, 0.0, 0.00),
-        (9.0, 0.04, 0.00),  # core, dR=0.04
-        (1.2, 0.0, 0.36),
-        (0.8, 0.30, 0.20),
-        (0.5, -0.05, 0.34),
-    ]  # 3 soft wide  ->  jet pT ~ 25 GeV
+    def _lambda11(consts, _R=0.4):
+        """Girth lambda_1^1 about the jet axis (summed-4-momentum direction)."""
+        _pt = np.array([c[0] for c in consts])
+        _e = np.array([c[1] for c in consts])
+        _p = np.array([c[2] for c in consts])
+        _ae, _ap = _jet_axis(consts)
+        _dR = np.sqrt((_e - _ae) ** 2 + (_p - _ap) ** 2)
+        return float(((_pt / _pt.sum()) * (_dR / _R)).sum())
 
-    _rA, _rB = _run_softdrop(_jetA), _run_softdrop(_jetB)
-    # A keeps everything; B keeps only the 2-constituent core.
-    _keptA = [True] * 5
-    _keptB = [True, True, False, False, False]
-    _lamA_un, _lamA_gr = _lambda11(_jetA), _lambda11(_jetA)  # identical (nothing dropped)
-    _lamB_un, _lamB_gr = _lambda11(_jetB), _lambda11(_jetB[:2])  # groomed = core only
+
+    def _kept_mask(jet, groomed):
+        """Match each input constituent to a surviving groomed constituent."""
+        return [
+            any(abs(pt - a) < 1e-2 and abs(e - b) < 1e-2 and abs(p - d) < 1e-2 for (a, b, d) in groomed)
+            for (pt, e, p) in jet
+        ]
+
+
+    # Four toy jets (pt[GeV], eta, phi), each ~30 GeV.
+    #   A = two hard wide clusters (each with collinear substructure): the widest
+    #       C/A split balances them (z_g>0.2) so grooming stops on the FIRST split
+    #       and keeps everything -> large R_g, lambda untouched.
+    #   B = hard collinear core + 3 soft wide-angle constituents: every wide split
+    #       is soft so all 3 peel -> tiny R_g, lambda collapses.
+    #   C = narrow & hard collinear core (spread over dR~0.1 so individually visible)
+    #       + a soft wide skirt of 3 -> small R_g, one-prong.
+    #   D = diffuse cross-like core of 4 comparable-pT hard prongs + a soft wide
+    #       skirt of 3 in the diagonal gaps -> mid R_g, n-prong.
+    _jetA = [
+        (8.0, 0.00, 0.00),
+        (6.0, 0.09, 0.06),
+        (4.0, 0.03, -0.09),  # cluster 1 (phi~0), pT~18, constituents spread for visibility
+        (7.0, 0.02, 0.34),
+        (5.0, 0.12, 0.30),  # cluster 2 (phi~0.32), pT~12  ->  jet pT ~ 30 GeV
+    ]
+    _jetB = [
+        (17.0, 0.00, 0.00),
+        (10.0, 0.04, 0.00),  # core, dR=0.04  pT~27
+        (1.5, 0.00, 0.36),
+        (1.0, 0.30, 0.20),
+        (0.5, -0.05, 0.34),  # 3 soft wide  ->  jet pT ~ 30 GeV
+    ]
+    _jetC = [
+        (10.0, 0.00, 0.00),
+        (8.0, 0.06, 0.04),
+        (5.0, 0.04, 0.08),
+        (3.0, 0.08, 0.06),  # hard collinear core (kept)  ~26 GeV
+        (2.0, 0.20, 0.16),
+        (1.2, -0.14, 0.20),
+        (0.8, 0.20, -0.10),  # soft wide skirt (groomed away)  ->  jet pT ~ 30 GeV
+    ]
+    _jetD = [
+        (7.0, 0.00, 0.15),
+        (7.0, 0.00, -0.15),
+        (7.0, 0.15, 0.00),
+        (6.0, -0.15, 0.00),  # diffuse cross core: 4 comparable prongs (kept)
+        (1.4, 0.26, 0.26),
+        (1.0, -0.34, -0.12),
+        (0.7, 0.26, -0.26),  # soft wide skirt (1.0 raised to clear the lambda box)  ->  jet pT ~ 30 GeV
+    ]
+
+    _jets = {"A": _jetA, "B": _jetB, "C": _jetC, "D": _jetD}
+    _res = {_k: _run_softdrop(_v) for _k, _v in _jets.items()}
+    _kept = {_k: _kept_mask(_jets[_k], _res[_k]["groomed"]) for _k in _jets}
+    _lamun = {_k: _lambda11(_jets[_k]) for _k in _jets}
+    _lamgr = {_k: _lambda11([c for c, _kk in zip(_jets[_k], _kept[_k]) if _kk]) for _k in _jets}
+
+    # order panels by INCREASING R_g (left -> right): B(0.04) C(0.08) D(0.21) A(0.34)
+    _order = sorted(_jets, key=lambda _k: _res[_k]["Rg"])
+    _names = {
+        "A": "two hard wide prongs",
+        "B": "soft halo + hard core",
+        "C": "narrow & hard (one-prong)",
+        "D": "diffuse & wide (n-prong)",
+    }
+    _tags = ["(a)", "(b)", "(c)", "(d)"]
+
+    # match the HP2026 poster font: sans-serif (Helvetica/Arial/DejaVu Sans) with the
+    # stixsans math fontset (the override applied in plot_hp2026_prelims.py).
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
+            "mathtext.fontset": "stixsans",
+        }
+    )
 
     # --- cartoon: constituents in the (eta, phi) plane, sized by pT ------------
-    _figc, _axc = plt.subplots(1, 2, figsize=(11, 5.2))
-    _specs = [
-        dict(
-            ax=_axc[0],
-            jet=_jetA,
-            res=_rA,
-            kept=_keptA,
-            name="A: Two pronged",
-            groups=[_jetA[:3], _jetA[3:]],
-            lam=(_lamA_un, _lamA_gr),
-            note=(r"$z=%.2f>z_{cut}-0.2$" % _rA["zg"]) + ("\n $R_g=%.2f$" % _rA["Rg"]),
-        ),
-        dict(
-            ax=_axc[1],
-            jet=_jetB,
-            res=_rB,
-            kept=_keptB,
-            name="B: Hard core + soft-wide radiation",
-            groups=[_jetB[:2]],
-            lam=(_lamB_un, _lamB_gr),
-            note=("$z=%.2f>z_{cut}=0.2$" % _rB["zg"]) + ("\n $R_g=%.2f$" % _rB["Rg"]),
-        ),
-    ]
-    for _s in _specs:
-        _ax, _jet, _kept = _s["ax"], _s["jet"], _s["kept"]
+    # poster layout: shared y across the row, panels flush (wspace=0); square
+    # figure aspect keeps the R=0.4 cones circular.
+    _figc, _axc = plt.subplots(
+        1, 4, figsize=(15.24, 4.7), sharex=True, sharey=True, gridspec_kw={"wspace": 0.0}
+    )
+    # attach a renderer-backed (Agg) canvas so adjustText can measure label extents
+    FigureCanvasAgg(_figc)
+    for _i, _k in enumerate(_order):
+        _ax = _axc[_i]
+        _jet, _kp, _r = _jets[_k], _kept[_k], _res[_k]
         # origin = jet axis (summed 4-momentum); all coords shown relative to it
         _axe, _axp = _jet_axis(_jet)
         _jpt = _jet_pt(_jet)
         _e = np.array([c[1] for c in _jet]) - _axe
         _p = np.array([c[2] for c in _jet]) - _axp
         _pt = np.array([c[0] for c in _jet])
-        # dashed guide lines join SUBJET axes (also relative to the jet axis):
-        #   A = the two hard-cluster axes; B = core axis -> each dropped soft prong.
-        if len(_s["groups"]) == 2:
-            _g1, _g2 = _jet_axis(_s["groups"][0]), _jet_axis(_s["groups"][1])
-            _ax.plot(
-                [_g1[0] - _axe, _g2[0] - _axe], [_g1[1] - _axp, _g2[1] - _axp], "k--", lw=1.3, zorder=2
-            )
-        else:
-            _gc = _jet_axis(_s["groups"][0])
-            _gce, _gcp = _gc[0] - _axe, _gc[1] - _axp
-            for _xi, _yi, _k in zip(_e, _p, _kept):
-                if not _k:
-                    _ax.plot([_gce, _xi], [_gcp, _yi], "--", color="#d62728", lw=1.0, zorder=2)
         _ax.plot(0, 0, "+", color="k", ms=12, mew=2.0, zorder=5)
-        _ax.annotate(
-            "jet axis",
-            (0, 0),
-            textcoords="offset points",
-            xytext=(-8, 9),
-            ha="right",
-            fontsize=9,
-            color="0.3",
-        )
-        for _xi, _yi, _pti, _k in zip(_e, _p, _pt, _kept):
+        _texts = []
+        _n = len(_pt)
+        for _idx, (_xi, _yi, _pti, _kk) in enumerate(zip(_e, _p, _pt, _kp)):
             _ax.scatter(
                 _xi,
                 _yi,
                 s=42 * _pti,
-                c=("#2ca02c" if _k else "#d62728"),
+                c=("#2ca02c" if _kk else "#d62728"),
                 alpha=0.55,
                 edgecolors="k",
                 linewidths=1.0,
                 zorder=3,
             )
-            _ax.annotate(
-                rf"${_pti:g}$", (_xi, _yi), textcoords="offset points", xytext=(7, 6), fontsize=10
+            # seed each label just outside its marker, radially out from the jet axis
+            # (markers at the axis get a fanned-out fallback angle) so it starts off
+            # the circle; adjustText then only resolves residual label-label overlaps.
+            _rdata = np.sqrt(42 * _pti / np.pi) / 72.0 * (0.92 / 3.62)  # marker radius -> data units
+            _d = np.hypot(_xi, _yi)
+            if _d < 1e-3:
+                _ang = 2 * np.pi * _idx / max(_n, 1)
+                _ux, _uy = np.cos(_ang), np.sin(_ang)
+            else:
+                _ux, _uy = _xi / _d, _yi / _d
+            _off = _rdata + 0.015
+            _texts.append(
+                _ax.text(
+                    _xi + _ux * _off,
+                    _yi + _uy * _off,
+                    rf"${_pti:g}$",
+                    fontsize=10,
+                    ha="center",
+                    va="center",
+                    zorder=6,
+                )
             )
+        _lu, _lg = _lamun[_k], _lamgr[_k]
+        _pct = 100.0 * (1.0 - _lg / _lu)
         _ax.text(
-            0.6,
-            0.96,
-            _s["note"],
+            0.04,
+            0.115,
+            (r"$\lambda^{1}_{1} = %.3f$" % _lu) + "\n" + (r"$\lambda^{1}_{1,\mathrm{g}} = %.3f$" % _lg),
+            transform=_ax.transAxes,
+            va="bottom",
+            ha="left",
+            fontsize=12,
+        )
+        # groomed fraction, bold + larger
+        _ax.text(
+            0.04,
+            0.04,
+            r"$\boldsymbol{\Delta\lambda^{1}_{1}/\lambda^{1}_{1} = %.0f\%%}$" % _pct,
+            transform=_ax.transAxes,
+            va="bottom",
+            ha="left",
+            fontsize=15,
+            fontweight="bold",
+        )
+        # Rg (bold, larger) + zg in the upper-left corner (replaces the title)
+        _ax.text(
+            0.03,
+            0.975,
+            r"$\boldsymbol{R_g = %.2f}$" % _r["Rg"],
+            transform=_ax.transAxes,
+            va="top",
+            ha="left",
+            fontsize=15,
+            fontweight="bold",
+        )
+        _ax.text(
+            0.03,
+            0.86,
+            r"$z_g = %.2f$" % _r["zg"],
             transform=_ax.transAxes,
             va="top",
             ha="left",
             fontsize=12,
-            bbox=dict(boxstyle="round", fc="#fff7e6", ec="0.5"),
         )
-        _lu, _lg = _s["lam"]
+        # jet pT on its own, top-right corner
         _ax.text(
-            0.96,
-            0.04,
-            r"girth $\lambda^{1}_{1}$:"
-            + "\n"
-            + (r"  ungroomed $= %.3f$" % _lu)
-            + "\n"
-            + (r"  groomed $\;\;= %.3f$" % _lg),
+            0.97,
+            0.97,
+            r"$p_T^{\rm jet} = %.0f$ GeV/$c$" % _jpt,
             transform=_ax.transAxes,
-            va="bottom",
+            va="top",
             ha="right",
             fontsize=12,
-            bbox=dict(boxstyle="round", fc="#eef5ff", ec="0.5"),
-        )
-        _ax.set_title(
-            _s["name"] + rf"  ($p_T^{{\rm jet}}\approx{_jpt:.0f}$ GeV, kept {_s['res']['n_out']}/5)",
-            fontsize=12.5,
         )
         _ax.set_xlabel(r"$\eta-\eta_{\rm jet}$")
-        _ax.set_ylabel(r"$\varphi-\varphi_{\rm jet}$")
-        _ax.set_xlim(-0.4, 0.4)
-        _ax.set_ylim(-0.4, 0.4)
+        if _i == 0:
+            _ax.set_ylabel(r"$\varphi-\varphi_{\rm jet}$", labelpad=10)
+        # pad past R=0.4 so the whole jet cone clears the frame (square range)
+        _ax.set_xlim(-0.46, 0.46)
+        _ax.set_ylim(-0.46, 0.46)
+        # square columns (fixed via subplots_adjust below) keep the cones circular
+        _ax.set_aspect("equal", adjustable="box")
+        # drop the +-0.4 edge ticks so adjacent (flush) panels don't collide
+        _ax.set_xticks([-0.2, 0.0, 0.2])
         _ax.add_patch(plt.Circle((0, 0), 0.4, fill=False, ls=":", ec="0.6"))
-    _figc.tight_layout()
+        # repel the pT labels off the constituent positions and each other (limits
+        # set above so adjustText knows the frame); thin leader lines when they move
+        _ax.figure.canvas.draw()
+        adjust_text(
+            _texts,
+            x=list(_e),
+            y=list(_p),
+            ax=_ax,
+            force_text=(0.22, 0.32),
+            force_static=(0.25, 0.32),
+            force_explode=(0.08, 0.14),
+            expand=(1.08, 1.2),
+            max_move=4,
+            arrowprops=dict(arrowstyle="-", color="0.45", lw=0.6),
+            ensure_inside_axes=True,
+        )
+    # legend on the last (highest-R_g) panel: green = kept, red = peeled by SoftDrop
+    _legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor="#2ca02c",
+            markeredgecolor="k",
+            markersize=11,
+            alpha=0.7,
+            label="survives grooming",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            linestyle="none",
+            markerfacecolor="#d62728",
+            markeredgecolor="k",
+            markersize=11,
+            alpha=0.7,
+            label="groomed away",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="+",
+            linestyle="none",
+            color="k",
+            markersize=11,
+            markeredgewidth=2.0,
+            label="jet axis",
+        ),
+    ]
+    _figc.legend(
+        handles=_legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.0),
+        ncol=3,
+        frameon=False,
+        fontsize=12,
+    )
+    # make the rightmost panel's right edge exactly mirror the left edge:
+    # same label (rotated to read down-the-axis) + the tick numbers on the right
+    _axc[-1].yaxis.set_label_position("right")
+    _axc[-1].set_ylabel(r"$\varphi-\varphi_{\rm jet}$", rotation=270, labelpad=29)
+    _axc[-1].tick_params(axis="y", labelright=True)
+    # margins chosen so each of the 4 columns is square -> box-equal stays flush
+    _figc.subplots_adjust(left=0.045, right=0.995, top=0.90, bottom=0.13, wspace=0.0)
 
     os.makedirs(OUT_DIR, exist_ok=True)
-    _figc.savefig(os.path.join(OUT_DIR, "fig_rg_grooming_cartoon.pdf"), bbox_inches="tight")
+    _figc.savefig(os.path.join(OUT_DIR, "fig_grooming_cartoon_4panel.pdf"), bbox_inches="tight")
 
+    _rows = "\n".join(
+        rf"| {_tags[_i]} {_names[_k]} | {len(_jets[_k])} | {_res[_k]['zg']:.2f} | {_res[_k]['Rg']:.2f} | "
+        rf"{_res[_k]['n_out']}/{len(_jets[_k])} | **{_lamun[_k]:.3f} $\to$ {_lamgr[_k]:.3f}** "
+        rf"($-${100 * (1 - _lamgr[_k] / _lamun[_k]):.0f}%) |"
+        for _i, _k in enumerate(_order)
+    )
     _md = mo.md(rf"""
-    ### Why the highest-$R_g$ jets are the *least* affected by grooming
+    ### Four archetype jets, ordered by $R_g$: how grooming and the girth $\lambda$ respond to jet shape
 
-    SoftDrop here ($z_{{\rm cut}}=0.2$, $\beta=0$, $R_0=0.4$, scalar-$z$) walks the
-    angular-ordered (C/A) tree from the **widest** splitting inward and at each two-prong
-    splitting tests
+    All four toy jets sit at $p_T^{{\rm jet}}\approx 30$ GeV and are run through the EXACT
+    `exclusive_jets_softdrop_grooming` path ($z_{{\rm cut}}=0.2$, $\beta=0$, $R_0=0.4$, scalar-$z$).
+    The girth $\lambda^{{1}}_{{1}}=\sum_i z_i\,(\Delta R_i/R)$ is a $p_T$-weighted angular spread about
+    the jet axis. With $\beta=0$ the SoftDrop cut is a **pure momentum balance** ($z>0.2$, independent of
+    angle), so $R_g$ is simply the angle of the *first* splitting that survives — and **a large $R_g$
+    means the widest split was already hard, so grooming stops immediately and removes nothing**.
 
-    $$z=\frac{{\min(p_{{T,1}},p_{{T,2}})}}{{p_{{T,1}}+p_{{T,2}}}}\;>\;z_{{\rm cut}}\Big(\tfrac{{\Delta R_{{12}}}}{{R_0}}\Big)^{{\beta}}\;\overset{{\beta=0}}{{=}}\;z_{{\rm cut}}=0.2 .$$
-
-    With **$\beta=0$ the cut is purely a momentum balance, independent of angle**, and
-    $R_g$ is simply the angle of the *first* splitting that passes. Hence:
-
-    * **Large $R_g$:** the very first, widest splitting already had $z>0.2$ &rarr; grooming
-      **stops immediately and removes nothing** &rarr; the groomed jet *is* the full jet, so
-      **every groomed angularity equals its ungroomed value** (least affected, by construction).
-    * **Small $R_g$:** the wide splittings were soft ($z<0.2$) and got peeled away; SoftDrop
-      only stopped deep in the collinear core &rarr; strongly groomed.
-
-    So a high-$R_g$ jet **must** carry $\ge 20\%$ of its momentum in a **wide-angle prong** —
-    wide *and hard* radiation. Ordinary QCD wide emission is soft, so these are rare,
-    "pathological" configurations. Two **5-constituent** jets (run through the exact
-    `exclusive_jets_softdrop_grooming` path, $R=0.4$):
-
-    | | constituents | stop-split $z_g$ | $R_g$ | kept | $\lambda^{{1}}_{{1}}$ ungroomed &rarr; groomed |
+    | panel | constituents | $z_g$ | $R_g$ | kept | $\lambda^{{1}}_{{1}}$ ungroomed $\to$ groomed |
     |---|---|---|---|---|---|
-    | **A** two hard wide clusters | 5 | {_rA["zg"]:.2f} | {_rA["Rg"]:.2f} | {_rA["n_out"]}/5 | **{_lamA_un:.3f} &rarr; {_lamA_gr:.3f}**  (0% change) |
-    | **B** core + 3 soft wide | 5 | {_rB["zg"]:.2f} | {_rB["Rg"]:.2f} | {_rB["n_out"]}/5 | {_lamB_un:.3f} &rarr; {_lamB_gr:.3f}  (&minus;{100 * (1 - _lamB_gr / _lamB_un):.0f}%) |
+    {_rows}
 
-    Jet **A**: the widest C/A split balances the two hard clusters ($z_g={_rA["zg"]:.2f}>0.2$),
-    so SoftDrop stops on the *first* split, keeps **all 5** constituents, and $R_g={_rA["Rg"]:.2f}$
-    is large — grooming is a no-op and $\lambda$ is untouched.
-    Jet **B**: every wide split is a soft halo prong ($z<0.2$), so all **3** are peeled until
-    SoftDrop reaches the $z_g={_rB["zg"]:.2f}$ collinear core; $R_g$ collapses to ${_rB["Rg"]:.2f}$
-    and $\lambda$ drops by &minus;{100 * (1 - _lamB_gr / _lamB_un):.0f}%. **Maximal $R_g$ &hArr; minimal grooming.**
+    Reading left $\to$ right (increasing $R_g$): **(a)** a soft wide halo around a hard collinear core
+    — every wide split is soft, all of it peels, $R_g$ collapses and $\lambda$ drops sharply; **(b)** an
+    intrinsically narrow, hard one-prong — tiny $\lambda$; **(c)** a diffuse wide *n*-prong — the
+    $\Delta R$-weighted sum is large, $\lambda$ is several times bigger; **(d)** two hard, wide,
+    *balanced* prongs — the first (widest) split passes the cut, so SoftDrop keeps **all** constituents
+    and $\lambda$ is **untouched (0% groomed)**. Hence the punchline that motivated this: the
+    **highest-$R_g$ jets are the least affected by grooming** — they must carry $\ge 20\%$ of their
+    momentum in a wide-angle prong (wide *and* hard radiation), the rare "pathological" configuration.
     """)
 
     mo.vstack([_md, _figc])
+    return FigureCanvasAgg, adjust_text, mo
+
+
+@app.cell
+def angular_ordering_cartoon(FigureCanvasAgg, adjust_text):
+    # ---------------------------------------------------------------------------
+    # Edification (companion to the R_g grooming cartoon above): how EARLY soft
+    # wide-angle radiation CONSTRAINS the angular phase space of LATER splittings.
+    #
+    # Physics: a QCD parton shower is *angular ordered* (color coherence). A soft
+    # gluon radiated at angle theta is emitted coherently by the NET color charge
+    # of everything already collinear to it, so any subsequent radiation off either
+    # resulting prong is confined to a cone of half-angle < theta. Emission angles
+    # down a branch therefore form a strictly NESTED, DECREASING sequence
+    # theta_1 > theta_2 > theta_3 ..., the earliest/widest split capping the rest.
+    # Cambridge/Aachen reclustering (merge nearest-in-angle first) declusters the
+    # jet back out widest-first -- the primary Lund sequence -- and its first split
+    # IS R_g, tying this to the grooming cartoon above.
+    # ---------------------------------------------------------------------------
+    import marimo as _mo
+
+    # match the HP2026 poster font: sans-serif + stixsans math (as in
+    # plot_hp2026_prelims.py). `adjust_text` and `FigureCanvasAgg` are already
+    # imported by the grooming_cartoon cell above -- reuse them, do not re-import.
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Helvetica", "Arial", "DejaVu Sans"],
+            "mathtext.fontset": "stixsans",
+        }
+    )
+
+
+    def _dR(a, b):
+        return float(np.hypot(a[1] - b[1], a[2] - b[2]))
+
+
+    def _merge(a, b):
+        # Cambridge/Aachen recombination: pt-weighted (eta, phi) centroid, pt summed.
+        _ptsum = a[0] + b[0]
+        return (
+            _ptsum,
+            (a[0] * a[1] + b[0] * b[1]) / _ptsum,
+            (a[0] * a[2] + b[0] * b[2]) / _ptsum,
+        )
+
+
+    def _ca_primary_decluster(consts):
+        """Cambridge/Aachen primary Lund declustering, pure-angle (dR) metric.
+
+        Build the C/A tree by repeatedly merging the closest pair in dR, then walk
+        DOWN from the root following the harder-pT child, recording the opening
+        angle dR and Lund z of each split (widest/earliest first). The softer child
+        at each step is the 'emission'."""
+        _nodes = {}
+        for _k, _c in enumerate(consts):
+            _nodes[_k] = (_c[0], _c[1], _c[2], None, None)  # (pt, eta, phi, c1, c2)
+        _active = list(range(len(consts)))
+        _nxt = len(consts)
+        while len(_active) > 1:
+            _best = None
+            for _ii in range(len(_active)):
+                for _jj in range(_ii + 1, len(_active)):
+                    _d = _dR(_nodes[_active[_ii]], _nodes[_active[_jj]])
+                    if _best is None or _d < _best[0]:
+                        _best = (_d, _ii, _jj)
+            _, _ii, _jj = _best
+            _ai, _bi = _active[_ii], _active[_jj]
+            _m = _merge(_nodes[_ai], _nodes[_bi])
+            _nodes[_nxt] = (_m[0], _m[1], _m[2], _ai, _bi)
+            _active = [_x for _x in _active if _x not in (_ai, _bi)] + [_nxt]
+            _nxt += 1
+        _root = _active[0]
+        _seq, _cur = [], _root
+        while _nodes[_cur][3] is not None:
+            _c1, _c2 = _nodes[_cur][3], _nodes[_cur][4]
+            _n1, _n2 = _nodes[_c1], _nodes[_c2]
+            _zi = min(_n1[0], _n2[0]) / (_n1[0] + _n2[0])
+            _seq.append((_dR(_n1, _n2), _zi, _n1, _n2))  # widest first
+            _cur = _c1 if _n1[0] >= _n2[0] else _c2  # follow the harder branch
+        return _seq, _nodes[_root]
+
+
+    # Toy: leading parton (hard core) + 3 angular-ordered emissions, widths chosen
+    # so the primary C/A branch peels them widest-first (g1 soft+wide -> g3 collinear).
+    _jet = [
+        (16.0, 0.00, 0.00),  # hard core (leading parton)
+        (2.0, 0.02, 0.34),  # g1: soft, WIDE-angle  (early emission)
+        (5.0, 0.16, 0.05),  # g2: intermediate angle
+        (3.0, -0.06, 0.03),  # g3: narrow / collinear (late emission)
+    ]
+    _seq, _root = _ca_primary_decluster(_jet)
+    _thetas = [s[0] for s in _seq]  # theta_1 > theta_2 > theta_3
+    _zs = [s[1] for s in _seq]
+    _R = 0.4
+    _core = _jet[0]
+
+    _figo, (_axA, _axB) = plt.subplots(1, 2, figsize=(11.5, 5.3))
+    # renderer-backed canvas so adjustText can measure label extents
+    FigureCanvasAgg(_figo)
+
+    # --- Panel A: nested coherence cones in the (eta, phi) plane ----------------
+    _cone_fc = plt.cm.Blues(np.linspace(0.55, 0.22, len(_thetas)))
+    for _th, _fc in zip(_thetas, _cone_fc):  # widest (lightest fill) first, drawn under
+        _axA.add_patch(plt.Circle((0, 0), _th, fc=_fc, ec="none", alpha=0.5, zorder=1))
+    for _th in _thetas:  # cone outlines; the theta values now label the emissions
+        _axA.add_patch(plt.Circle((0, 0), _th, fill=False, ec="0.35", lw=1.0, zorder=2))
+    _gen_color = ["#222222"] + list(plt.cm.autumn(np.linspace(0.05, 0.7, len(_jet) - 1)))
+    _textsA, _exA, _eyA = [], [], []
+    for _ci, _c in enumerate(_jet):
+        _x, _y = _c[1] - _core[1], _c[2] - _core[2]
+        _lab = "core" if _ci == 0 else rf"$g_{_ci}$"
+        _axA.scatter(
+            _x,
+            _y,
+            s=42 * _c[0],
+            c=[_gen_color[_ci]],
+            alpha=0.7,
+            edgecolors="k",
+            linewidths=1.0,
+            zorder=4,
+        )
+        _exA.append(_x)
+        _eyA.append(_y)
+        if _ci == 0:
+            # core: place its label by hand, just up-and-right of the big marker so it
+            # hugs the point it labels (kept out of adjustText so it stays put).
+            _axA.text(
+                _x + 0.06,
+                _y - 0.02,
+                rf"{_lab} $p_T={_c[0]:g}$",
+                fontsize=9,
+                ha="left",
+                va="center",
+                zorder=6,
+            )
+            continue
+        # emissions: seed each label just outside its marker (radially out from the
+        # core) so it starts off the circle; adjustText then resolves overlaps.
+        _rd = np.sqrt(42 * _c[0] / np.pi) / 72.0 * (0.92 / 3.4)
+        _dd = np.hypot(_x, _y)
+        _ux, _uy = (0.0, -1.0) if _dd < 1e-3 else (_x / _dd, _y / _dd)
+        _o = _rd + 0.02
+        _textsA.append(
+            _axA.text(
+                _x + _ux * _o,
+                _y + _uy * _o,
+                rf"$\theta_{_ci}={_thetas[_ci - 1]:.2f},\ p_T={_c[0]:g}$",
+                fontsize=9,
+                ha="center",
+                va="center",
+                zorder=6,
+            )
+        )
+    _axA.plot(0, 0, "+", color="k", ms=12, mew=2.0, zorder=5)
+    _axA.add_patch(plt.Circle((0, 0), _R, fill=False, ls=":", ec="0.6"))
+    _axA.set_xlim(-0.46, 0.46)
+    _axA.set_ylim(-0.46, 0.46)
+    _axA.set_aspect("equal")
+    _axA.set_xlabel(r"$\eta-\eta_{\rm core}$")
+    _axA.set_ylabel(r"$\varphi-\varphi_{\rm core}$")
+    # dodge the constituent labels off the markers/cones and each other
+    _axA.figure.canvas.draw()
+    adjust_text(
+        _textsA,
+        x=_exA,
+        y=_eyA,
+        ax=_axA,
+        force_text=(0.4, 0.6),
+        force_static=(0.3, 0.45),
+        force_explode=(0.15, 0.25),
+        expand=(1.2, 1.4),
+        max_move=6,
+        arrowprops=dict(arrowstyle="-", color="0.45", lw=0.6),
+        ensure_inside_axes=True,
+    )
+
+    # --- Panel B: angular-ordering ladder (allowed band shrinks each step) ------
+    _steps = np.arange(1, len(_thetas) + 1)
+    _caps = [_R] + _thetas[:-1]  # theta_0 = R caps step 1; theta_{i-1} caps step i
+    for _st, _cap in zip(_steps, _caps):
+        _axB.add_patch(plt.Rectangle((_st - 0.36, 0), 0.72, _cap, fc="#2ca02c", alpha=0.13, ec="none"))
+        _axB.add_patch(
+            plt.Rectangle(
+                (_st - 0.36, _cap), 0.72, _R - _cap, fc="#d62728", alpha=0.10, ec="none", hatch="//"
+            )
+        )
+        _axB.hlines(_cap, _st - 0.36, _st + 0.36, color="0.4", lw=1.0, ls="--")
+    _axB.plot(_steps, _thetas, "o-", color="#1f3b73", ms=9, lw=1.6, zorder=5)
+    for _st, _th in zip(_steps, _thetas):
+        _axB.annotate(
+            rf"$\theta_{_st}={_th:.2f}$",
+            (_st, _th),
+            textcoords="offset points",
+            xytext=(8, 5),
+            fontsize=10,
+        )
+    _axB.axhline(_R, color="0.5", ls=":", lw=1.0)
+    _axB.text(len(_thetas) + 0.42, _R, r"$R=0.4$", va="center", fontsize=9, color="0.4")
+    _axB.set_xlim(0.5, len(_thetas) + 0.75)
+    _axB.set_ylim(0, _R * 1.08)
+    _axB.set_xticks(_steps)
+    _axB.set_xlabel(r"splitting along leading branch (early $\to$ late)", fontsize=14)
+    _axB.set_ylabel(r"emission angle $\theta_i=\Delta R_i$", fontsize=14)
+    _figo.tight_layout()
+
+    os.makedirs(OUT_DIR, exist_ok=True)
+    _figo.savefig(os.path.join(OUT_DIR, "fig_angular_ordering_cartoon.pdf"), bbox_inches="tight")
+
+    _rows = "\n".join(
+        rf"| {_i} | $g_{_i}$ | {_t:.2f} | {_z:.2f} | "
+        + (rf"$\theta_{{{_i + 1}}}\leq\theta_{_i}$ |" if _i < len(_thetas) else "&mdash; |")
+        for _i, (_t, _z) in enumerate(zip(_thetas, _zs), 1)
+    )
+    _md = _mo.md(rf"""
+    ### How early soft wide-angle radiation constrains *later* splittings
+
+    QCD radiation is **angular ordered** &mdash; a consequence of *color coherence*. A
+    soft gluon emitted at angle $\theta$ off a color charge is radiated by the **net**
+    charge of everything already collinear to it, so any *subsequent* emission off
+    either of the two resulting prongs is confined to a cone of half-angle $<\theta$.
+    The emission angles down a branch therefore form a **strictly nested, decreasing**
+    sequence
+
+    $$\theta_1 \;>\; \theta_2 \;>\; \theta_3 \;>\; \dots,$$
+
+    the earliest, widest splitting setting the ceiling for everything that follows
+    (**left:** each coherence cone sits inside the previous; **right:** every later
+    angle is pinned below the green line the earlier one drew).
+
+    This is exactly what **Cambridge/Aachen** reclustering exposes: it merges the
+    nearest-in-angle pair first, so *declustering* from the root walks the shower back
+    out **widest-angle-first** &mdash; the **primary Lund sequence**. The very first
+    decluster is the widest splitting, i.e. **$R_g$** under SoftDrop ($\beta=0$):
+    $R_g=\theta_1$ whenever that first split also passes the momentum cut. Here the
+    early wide emission $g_1$ is genuinely **soft** ($z_1={_zs[0]:.2f}<z_{{\rm cut}}=0.2$),
+    so SoftDrop peels it and $R_g$ falls back to $\theta_2={_thetas[1]:.2f}$ &mdash; this
+    *is* the small-$R_g$ branch of the grooming cartoon above, now read off the same
+    angular-ordered ladder.
+
+    Toy leading parton $+$ 3 angular-ordered emissions, reclustered with C/A
+    (pure-angle metric), primary (leading-$p_T$) branch:
+
+    | split $i$ | emission | $\theta_i=\Delta R_i$ | Lund $z_i$ | constrains next |
+    |---|---|---|---|---|
+    {_rows}
+
+    The angles fall monotonically by construction of the **shower**, *not* of the
+    algorithm &mdash; C/A only *reveals* the ordering that coherence already imposed.
+    Physically this is why the **groomed** observables track the ungroomed ones (the
+    wide primary split that survives grooming dominates the angular structure), and why
+    an angularity's $\beta$ exponent &mdash; the $\Delta R^\beta$ weight &mdash; selects
+    *where along this nested ladder* it is most sensitive: large $\beta$ leans on the
+    early wide splittings, small $\beta$ on the late collinear ones.
+    """)
+
+    _mo.vstack([_md, _figo])
+    return
+
+
+@app.cell(hide_code=True)
+def poster_motivation_bullets(mo):
+    mo.md(r"""
+    ### Physical picture: angular ordering & grooming
+
+    - **Color coherence $\Rightarrow$ angular ordering.** A soft gluon sees the *net* color charge of everything collinear to it, so each emission is confined *inside* the previous one's cone: $\theta_1\!>\!\theta_2\!>\!\theta_3$ *(right)*.
+    - **The widest split — $R_g$ — caps the rest.** Every later (and every groomed) emission lives inside that first cone, so a single angle sets the angular phase space for the whole jet *(both)*.
+    - **Grooming removes the same soft, wide skirt from every jet** *(left, four jets ordered by $R_g$)* — and the groomed fraction shrinks along the spectrum, vanishing once the widest split is itself hard.
+    - **So $\langle\lambda\rangle$ vs $R_g$ is a test of coherence, not a redundant correlation:** does the data carry the nested angular structure the parton shower predicts?
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Why measure (charged) jet angularities? — physics motivations
+
+    The two cartoons above are not just pedagogy; they encode *why* this measurement is
+    worth doing. The **grooming cartoon** shows that the widest surviving splitting sets the
+    jet's angular scale ($R_g$), and the **angular-ordering cartoon** shows that this early,
+    wide emission **caps the angular phase space of every later splitting**
+    ($\theta_1>\theta_2>\theta_3$). Measuring the charged angularities
+    $\lambda^{\kappa}_{\beta}=\sum_{i\in\text{jet}} z_i^{\kappa}\,(\Delta R_i/R)^{\beta}$ —
+    groomed *and* ungroomed, fully unfolded and differential in jet $p_T$ — turns those
+    structural facts into quantitative tests of QCD.
+
+    1. **Scan the QCD radiation pattern across the $(\kappa,\beta)$ plane.**
+       A single jet image is projected onto a *family* of observables: the energy weight
+       $\kappa$ and the angular weight $\beta$ dial *which* emissions dominate. As the
+       angular-ordering ladder makes explicit, **large $\beta$ leans on the early, wide
+       splittings; small $\beta$ on the late, collinear ones.** Measuring the full
+       $(\kappa,\beta)$ grid (here $\kappa=1,2$; $\beta=0,\tfrac12,1,2$, plus $p_T^D=\lambda^2_0$
+       and the neutral-energy fraction) maps the *differential* structure of the parton
+       shower rather than a single moment of it, directly probing the DGLAP/coherent-branching
+       splitting kernels.
+
+    2. **Test color coherence / angular ordering experimentally.**
+       Angular ordering ($\theta_{i}\le\theta_{i-1}$) is a *prediction* of coherent QCD, not an
+       axiom. Because $R_g$ is the first/widest angle and every groomed angularity lives
+       *inside* that cone, the **measured correlation between $R_g$ and the (groomed) angularities**
+       is a direct handle on whether the data carry the nested angular structure coherence
+       predicts — and a vacuum reference for the *de*coherence expected in a medium.
+
+    3. **Separate perturbative from non-perturbative physics with grooming.**
+       SoftDrop ($z_{\rm cut}=0.2,\ \beta=0$) removes exactly the early *soft* wide-angle
+       radiation of the cartoons — the region most contaminated by hadronization, the
+       underlying event, and non-global logarithms. Comparing **groomed vs. ungroomed**
+       angularities quantifies the non-perturbative shift and yields observables that are far
+       more directly calculable in resummed pQCD. (The "highest-$R_g$ jets are *least* groomed"
+       insight even tells you *which* jets are perturbatively cleanest.)
+
+    4. **Provide a precision pp vacuum baseline at RHIC energy.**
+       Jet-substructure modification in heavy-ion collisions is always quoted *relative to* a
+       pp reference. A fully-corrected, multi-differential measurement of charged angularities
+       in $\sqrt{s}=200$ GeV $pp$ is that baseline — and angular ordering is precisely the
+       structure medium-induced color decoherence is expected to disrupt, so the vacuum
+       measurement defines the null hypothesis for quenching searches.
+
+    5. **Discriminate and tune parton-shower Monte Carlos.**
+       The unfolded result is confronted with **PYTHIA 6, PYTHIA 8, and HERWIG 7** — angular-
+       ordered vs. dipole/$p_T$-ordered showers with different hadronization models. A
+       multi-differential angularity measurement across jet $p_T$ and the $(\kappa,\beta)$
+       plane is sensitive enough to *separate* these models and constrain their tunes, especially
+       at RHIC kinematics (larger $\alpha_s$, smaller boost, different phase space than the LHC).
+
+    6. **Quantify the *information content* of jet substructure.**
+       The `angularities_noptd` and `angularities_minimal` cross-checks ask **how little of the
+       substructure is actually needed** to reproduce the unfolded result. This is a genuine
+       physics question about the dimensionality of the relevant emission manifold — whether
+       mass $M$, $M_g$, $R_g$ and $p_T^D$ are independently informative or largely redundant
+       given the angular ladder — and it connects this classical measurement to the modern
+       optimal-observable / ML-tagging program.
+
+    **Bonus — charged-particle observables & continuity with published STAR.** Using charged
+    constituents buys tracking-grade angular resolution (sharpening the $\Delta R$ weighting that
+    $\beta$ controls) and tests track-function universality and charge-dependent fragmentation;
+    the groomed mass, $z_g$ and $R_g$ here also extend the previously published STAR jet-substructure
+    results into the full angularity family.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    ## Poster review-response — specific, located edits (`slides/hp2026-poster/poster.tex`)
+
+    > *"…the motivation for generalized angularities is just that they are IRC safe, while
+    > there is no motivation listed for showing the different values of $\beta$, or the
+    > correlation of mean angularity with $R_g$. The Summary doesn't have any physics
+    > statements other than that the Monte Carlo is a bit off."*
+
+    Both named gaps are exactly the physics in the two cartoons above. Four located edits
+    close the comment word-for-word. (Your **Abstract** already states the real physics —
+    angular scale ↔ time/energy scale, p/npQCD separation via grooming — but that thread
+    never reaches the body boxes; these edits pull it through.)
+
+    ---
+
+    ### ① Box **"Generalized angularities"** (≈ L137–148) — fixes *"motivation is just IRC-safe"* **and** *"why different $\beta$"*
+    Right now `κ=1 → IRC-safe` is the *only* motivation. Add the $(\kappa,\beta)$ reading —
+    $\kappa$ = soft/hard weight, $\beta$ = **angular reach** — and say outright that $\beta$
+    slices the angular-ordered shower. Paste under the `\lambda` definition / into the itemize:
+
+    ```latex
+    \kappa:\ \text{soft vs hard fragmentation}\qquad
+    \beta:\ \text{collinear vs wide-angle emission}\notag
+    ```
+    ```latex
+    \item \textbf{Why scan }\boldsymbol{\beta}\textbf{:} larger $\beta$ up-weights wider
+          angles, so $\beta$ tunes the angular reach of $\lambda$ — small $\beta$ probes
+          late/collinear splittings, large $\beta$ the early, soft, wide-angle radiation
+          (angular ordering).
+    \item \textbf{Momentum dispersion:} $\lambda_2^0\ (p_T^D)$ — soft vs hard fragmentation
+    ```
+    (The $\lambda^2_0/p_T^D$ bullet is currently **commented out** at L147, yet $\lambda^2_0$
+    appears in your Summary list — restore it *with* this motivation.)
+
+    ### ② Box **"$\lambda_\beta^\kappa$ vs $R_g$"** (≈ L305–308) — fixes *"no motivation for the correlation with $R_g$"*
+    Add a **leading motivation** bullet, then upgrade the two observations into physics:
+
+    ```latex
+    \item \textbf{Why }\boldsymbol{R_g}\textbf{:} $R_g$ = angle of the widest (first) hard
+          splitting; angular ordering confines all later emission inside that cone, so
+          $\langle\lambda\rangle(R_g)$ probes how the leading splitting sets the angular
+          phase space — a test of \textbf{color coherence}, not a redundant correlation.
+    \item High-$R_g$ jets are unaffected by grooming: their widest split already passes
+          $z_{\rm cut}$ (groomed $=$ ungroomed) $\Rightarrow$ genuinely two-prong.
+    \item $\langle\lambda^{\kappa=1}_\beta\rangle$ rises monotonically with $R_g$, steepening
+          with $\beta$ — the angular-ordering fingerprint (wider leading split $\to$ more
+          angular phase space for radiation).
+    ```
+    *Backup if pushed:* your own checks show this trend is **data-driven, not inherited from
+    the PYTHIA6 prior** (prior-independence / prior-domination defense).
+
+    ### ③ Box **"$\lambda_\beta^\kappa$ distributions"** (≈ L289) — give the grooming shift a mechanism
+    `Shift increases with β` is an observation; make the cause explicit (ties to the grooming cartoon):
+
+    ```latex
+    \item Shift grows with $\beta$: SoftDrop removes the early, soft, wide-angle radiation
+          that dominates large-$\beta$ angularities (npQCD $\to$ pQCD).
+    ```
+
+    ### ④ Box **"Summary"** (≈ L316–321) — replace *"MC is a bit off"* with physics conclusions
+    Swap the descriptive bullets for statements about the *shower*:
+
+    ```latex
+    \item $\beta$-dependence of $\langle\lambda\rangle$ maps the wide-angle $\to$ collinear
+          structure of the shower; grooming shifts confirm removal of early soft wide radiation.
+    \item $\langle\lambda\rangle$ increases with $R_g$ as required by \textbf{angular ordering}:
+          the leading splitting sets the angular scale for all subsequent radiation (coherence).
+    \item Generators reproduce the collinear regime but \textbf{under-estimate wide-angle
+          radiation} (high $\beta$, large $R_g$) — they mis-model early, soft, wide emission,
+          not a generic normalization offset.
+    ```
+
+    ### ⑤ Box **"Abstract"** (≈ L121–123) — lead with the physics, demote quenching to one line
+    Generic phrasing ("various jet angularities", "model calculations") buries the hook.
+    Paste-ready rewrite (keeps both `\cite`s; opens on angular ordering):
+
+    ```latex
+    Jet substructure encodes the QCD shower's history --- wide-angle, early emissions
+    constrain the collinear, later ones through angular ordering. Generalized angularities
+    \(\lambda_\beta^\kappa\) read out this structure on a tunable plane --- \(\kappa\)
+    weighting soft vs.\ hard fragmentation, \(\beta\) the collinear-to-wide-angle reach ---
+    while SoftDrop grooming \cite{SoftDrop} strips the soft, wide-angle radiation where
+    non-perturbative QCD dominates, exposing the perturbative core. We present
+    fully-corrected (MultiFold) inclusive and groomed
+    \(\lambda^{\kappa=1}_{\beta\in\{0.5,1,2\}}\) and \(\lambda^{\kappa=2}_{0}\) from
+    \(p+p\) collisions at \(\sqrt{s}=200\) GeV in STAR, together with their dependence on
+    the groomed radius \(R_g\) --- a direct test of how the first, widest splitting sets
+    the angular phase space (color coherence). Confronting PYTHIA and HERWIG pinpoints
+    where shower models mis-handle wide-angle emission. At RHIC energies these measurements
+    reach a wider-angle, more non-perturbative regime than the LHC \cite{ALICE:2021njq},
+    fixing the vacuum baseline for jet-quenching signatures such as broadening.
+    ```
+    Key moves: open on **angular ordering** (not the vague time/energy line); fold in the
+    **$(\kappa,\beta)$ reading + $\beta$ reach** and the **$\langle\lambda\rangle$–$R_g$
+    coherence test** so the reviewer's two gaps are answered before the body; turn "model
+    calculations" into a physics statement; compress quenching to the final clause.
+
+    ---
+
+    **If space is tight:** ① and ② are non-negotiable (the reviewer's two named gaps); ④
+    makes the Summary pass; ③ is a one-line upgrade. Together they answer every clause of the
+    comment, and they re-use motivations #1 (β scan), #2 (coherence/$R_g$) and #3 (grooming =
+    pQCD/npQCD) from the cell above.
+    """)
     return
 
 
